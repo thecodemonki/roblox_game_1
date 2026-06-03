@@ -9,6 +9,9 @@
       },
       "PointsUpdate": {
         "$className": "RemoteEvent"
+      },
+      "LevelUp": {
+        "$className": "RemoteEvent"
       }
     },
 

@@ -42,6 +42,12 @@
       },
       "SkinInventorySync": {
         "$className": "RemoteEvent"
+      },
+      "CoinsUpdated": {
+        "$className": "RemoteEvent"
+      },
+      "PurchaseChest": {
+        "$className": "RemoteFunction"
       }
     },
 

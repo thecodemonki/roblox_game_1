@@ -17,6 +17,8 @@ local extinctionEvent = ReplicatedStorage:WaitForChild("ExtinctionEvent") :: Rem
 local lastPredator = ReplicatedStorage:WaitForChild("LastPredator") :: RemoteEvent
 local skinReceived = ReplicatedStorage:WaitForChild("SkinReceived") :: RemoteEvent
 local skinInventorySync = ReplicatedStorage:WaitForChild("SkinInventorySync") :: RemoteEvent
+local coinsUpdated = ReplicatedStorage:WaitForChild("CoinsUpdated") :: RemoteEvent
+local purchaseChest = ReplicatedStorage:WaitForChild("PurchaseChest") :: RemoteFunction
 
 local playerGui = player:WaitForChild("PlayerGui")
 
@@ -27,20 +29,71 @@ screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.DisplayOrder = 10
 screenGui.Parent = playerGui
 
+local topHudRow = Instance.new("Frame")
+topHudRow.Name = "TopHudRow"
+topHudRow.AnchorPoint = Vector2.new(1, 0)
+topHudRow.Position = UDim2.new(1, -12, 0, 12)
+topHudRow.Size = UDim2.fromOffset(460, 36)
+topHudRow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+topHudRow.BackgroundTransparency = 0.45
+topHudRow.BorderSizePixel = 0
+topHudRow.Parent = screenGui
+
+local topHudLayout = Instance.new("UIListLayout")
+topHudLayout.FillDirection = Enum.FillDirection.Horizontal
+topHudLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+topHudLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+topHudLayout.Padding = UDim.new(0, 10)
+topHudLayout.SortOrder = Enum.SortOrder.LayoutOrder
+topHudLayout.Parent = topHudRow
+
 local label = Instance.new("TextLabel")
 label.Name = "PointsLabel"
-label.AnchorPoint = Vector2.new(1, 0)
-label.Position = UDim2.new(1, -12, 0, 12)
-label.Size = UDim2.fromOffset(300, 36)
-label.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-label.BackgroundTransparency = 0.45
+label.Size = UDim2.new(0, 260, 1, 0)
+label.BackgroundTransparency = 1
 label.BorderSizePixel = 0
 label.Font = Enum.Font.GothamBold
 label.Text = "Points: 0  ·  Lv. 1"
 label.TextColor3 = Color3.fromRGB(255, 255, 255)
 label.TextSize = 20
 label.TextXAlignment = Enum.TextXAlignment.Right
-label.Parent = screenGui
+label.LayoutOrder = 1
+label.Parent = topHudRow
+
+local coinIcon = Instance.new("Frame")
+coinIcon.Name = "CoinIcon"
+coinIcon.Size = UDim2.fromOffset(18, 18)
+coinIcon.BackgroundColor3 = Color3.fromRGB(255, 215, 60)
+coinIcon.BorderSizePixel = 0
+coinIcon.LayoutOrder = 2
+coinIcon.Parent = topHudRow
+
+local coinIconRound = Instance.new("UICorner")
+coinIconRound.CornerRadius = UDim.new(1, 0)
+coinIconRound.Parent = coinIcon
+
+local coinsLabel = Instance.new("TextLabel")
+coinsLabel.Name = "CoinsLabel"
+coinsLabel.Size = UDim2.new(0, 72, 1, 0)
+coinsLabel.BackgroundTransparency = 1
+coinsLabel.Font = Enum.Font.GothamBold
+coinsLabel.Text = "0"
+coinsLabel.TextColor3 = Color3.fromRGB(255, 220, 120)
+coinsLabel.TextSize = 20
+coinsLabel.TextXAlignment = Enum.TextXAlignment.Left
+coinsLabel.LayoutOrder = 3
+coinsLabel.Parent = topHudRow
+
+local currentCoins = 0
+
+local function setHudPointsLine(points: number, level: number)
+	label.Text = string.format("Points: %d  ·  Lv. %d", points, level)
+end
+
+local function setHudCoins(coins: number)
+	currentCoins = coins
+	coinsLabel.Text = tostring(coins)
+end
 
 local titleHudLabel = Instance.new("TextLabel")
 titleHudLabel.Name = "TitleHud"
@@ -57,12 +110,12 @@ titleHudLabel.Parent = screenGui
 
 local corner = Instance.new("UICorner")
 corner.CornerRadius = UDim.new(0, 6)
-corner.Parent = label
+corner.Parent = topHudRow
 
 local padding = Instance.new("UIPadding")
 padding.PaddingRight = UDim.new(0, 10)
 padding.PaddingLeft = UDim.new(0, 10)
-padding.Parent = label
+padding.Parent = topHudRow
 
 -- Health bar (Humanoid health replicates locally)
 local healthGui = Instance.new("ScreenGui")
@@ -363,9 +416,280 @@ skinInventorySync.OnClientEvent:Connect(function(payload: unknown)
 	rebuildSkinGrid()
 end)
 
+-- --- Shop (chest purchases) ---
+local SHOP_COMMON_PRICE = 50
+local SHOP_RARE_PRICE = 150
+
+local shopGui = Instance.new("ScreenGui")
+shopGui.Name = "ShopGui"
+shopGui.ResetOnSpawn = false
+shopGui.DisplayOrder = 45
+shopGui.Parent = playerGui
+
+local shopModal = Instance.new("Frame")
+shopModal.Name = "ShopModal"
+shopModal.Size = UDim2.fromScale(1, 1)
+shopModal.BackgroundTransparency = 1
+shopModal.Visible = false
+shopModal.Parent = shopGui
+
+local shopDim = Instance.new("TextButton")
+shopDim.Name = "Dim"
+shopDim.Size = UDim2.fromScale(1, 1)
+shopDim.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+shopDim.BackgroundTransparency = 0.45
+shopDim.Text = ""
+shopDim.AutoButtonColor = false
+shopDim.ZIndex = 1
+shopDim.Parent = shopModal
+
+local shopPanel = Instance.new("Frame")
+shopPanel.Name = "Panel"
+shopPanel.AnchorPoint = Vector2.new(0.5, 0.5)
+shopPanel.Position = UDim2.new(0.5, 0, 0.5, 0)
+shopPanel.Size = UDim2.fromOffset(560, 440)
+shopPanel.BackgroundColor3 = Color3.fromRGB(28, 28, 36)
+shopPanel.BorderSizePixel = 0
+shopPanel.ZIndex = 2
+shopPanel.Parent = shopModal
+
+local shopPanelCorner = Instance.new("UICorner")
+shopPanelCorner.CornerRadius = UDim.new(0, 12)
+shopPanelCorner.Parent = shopPanel
+
+local shopTitle = Instance.new("TextLabel")
+shopTitle.Size = UDim2.new(1, -100, 0, 36)
+shopTitle.Position = UDim2.new(0, 16, 0, 12)
+shopTitle.BackgroundTransparency = 1
+shopTitle.Font = Enum.Font.GothamBlack
+shopTitle.TextSize = 22
+shopTitle.TextColor3 = Color3.fromRGB(255, 220, 120)
+shopTitle.TextXAlignment = Enum.TextXAlignment.Left
+shopTitle.Text = "Skin chest shop"
+shopTitle.Parent = shopPanel
+
+local shopClose = Instance.new("TextButton")
+shopClose.Size = UDim2.fromOffset(36, 36)
+shopClose.Position = UDim2.new(1, -44, 0, 10)
+shopClose.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+shopClose.TextColor3 = Color3.fromRGB(255, 255, 255)
+shopClose.Font = Enum.Font.GothamBold
+shopClose.TextSize = 20
+shopClose.Text = "X"
+shopClose.AutoButtonColor = true
+shopClose.ZIndex = 3
+shopClose.Parent = shopPanel
+
+local shopCloseCorner = Instance.new("UICorner")
+shopCloseCorner.CornerRadius = UDim.new(0, 8)
+shopCloseCorner.Parent = shopClose
+
+local shopCardsRow = Instance.new("Frame")
+shopCardsRow.Name = "CardsRow"
+shopCardsRow.AnchorPoint = Vector2.new(0.5, 0)
+shopCardsRow.Position = UDim2.new(0.5, 0, 0, 56)
+shopCardsRow.Size = UDim2.new(1, -24, 1, -68)
+shopCardsRow.BackgroundTransparency = 1
+shopCardsRow.Parent = shopPanel
+
+local cardsLayout = Instance.new("UIListLayout")
+cardsLayout.FillDirection = Enum.FillDirection.Horizontal
+cardsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+cardsLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+cardsLayout.Padding = UDim.new(0, 16)
+cardsLayout.Parent = shopCardsRow
+
+local function makeChestCard(
+	parent: Instance,
+	titleText: string,
+	price: number,
+	oddsText: string,
+	layoutOrder: number
+): TextButton
+	local card = Instance.new("Frame")
+	card.Size = UDim2.new(0, 248, 0, 340)
+	card.BackgroundColor3 = Color3.fromRGB(38, 38, 48)
+	card.BorderSizePixel = 0
+	card.LayoutOrder = layoutOrder
+	card.Parent = parent
+
+	local cc = Instance.new("UICorner")
+	cc.CornerRadius = UDim.new(0, 10)
+	cc.Parent = card
+
+	local t = Instance.new("TextLabel")
+	t.Size = UDim2.new(1, -16, 0, 28)
+	t.Position = UDim2.new(0, 8, 0, 10)
+	t.BackgroundTransparency = 1
+	t.Font = Enum.Font.GothamBold
+	t.TextSize = 17
+	t.TextColor3 = Color3.fromRGB(240, 240, 250)
+	t.TextXAlignment = Enum.TextXAlignment.Left
+	t.Text = titleText
+	t.Parent = card
+
+	local p = Instance.new("TextLabel")
+	p.Size = UDim2.new(1, -16, 0, 24)
+	p.Position = UDim2.new(0, 8, 0, 40)
+	p.BackgroundTransparency = 1
+	p.Font = Enum.Font.GothamBold
+	p.TextSize = 16
+	p.TextColor3 = Color3.fromRGB(255, 210, 90)
+	p.TextXAlignment = Enum.TextXAlignment.Left
+	p.Text = string.format("%d coins", price)
+	p.Parent = card
+
+	local odds = Instance.new("TextLabel")
+	odds.Size = UDim2.new(1, -16, 0, 200)
+	odds.Position = UDim2.new(0, 8, 0, 72)
+	odds.BackgroundTransparency = 1
+	odds.Font = Enum.Font.GothamMedium
+	odds.TextSize = 14
+	odds.TextColor3 = Color3.fromRGB(190, 190, 200)
+	odds.TextXAlignment = Enum.TextXAlignment.Left
+	odds.TextYAlignment = Enum.TextYAlignment.Top
+	odds.TextWrapped = true
+	odds.Text = oddsText
+	odds.Parent = card
+
+	local buy = Instance.new("TextButton")
+	buy.Size = UDim2.new(1, -20, 0, 40)
+	buy.Position = UDim2.new(0, 10, 1, -50)
+	buy.BackgroundColor3 = Color3.fromRGB(70, 160, 95)
+	buy.TextColor3 = Color3.fromRGB(255, 255, 255)
+	buy.Font = Enum.Font.GothamBold
+	buy.TextSize = 16
+	buy.Text = "Buy"
+	buy.AutoButtonColor = true
+	buy.Parent = card
+
+	local buyC = Instance.new("UICorner")
+	buyC.CornerRadius = UDim.new(0, 8)
+	buyC.Parent = buy
+
+	return buy
+end
+
+local oddsCommon = "Drop rates:\nCommon 60%\nRare 25%\nEpic 12%\nLegendary 3%"
+local oddsRare = "Drop rates:\nCommon 20%\nRare 50%\nEpic 25%\nLegendary 5%"
+
+local commonBuyBtn = makeChestCard(shopCardsRow, "Common chest", SHOP_COMMON_PRICE, oddsCommon, 1)
+local rareBuyBtn = makeChestCard(shopCardsRow, "Rare chest", SHOP_RARE_PRICE, oddsRare, 2)
+
+local function refreshShopBuyButtons()
+	local c = currentCoins
+	if c < SHOP_COMMON_PRICE then
+		commonBuyBtn.Text = "Not enough coins"
+		commonBuyBtn.AutoButtonColor = false
+		commonBuyBtn.Active = false
+		commonBuyBtn.BackgroundColor3 = Color3.fromRGB(72, 72, 80)
+		commonBuyBtn.TextColor3 = Color3.fromRGB(170, 170, 178)
+	else
+		commonBuyBtn.Text = "Buy"
+		commonBuyBtn.AutoButtonColor = true
+		commonBuyBtn.Active = true
+		commonBuyBtn.BackgroundColor3 = Color3.fromRGB(70, 160, 95)
+		commonBuyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	end
+	if c < SHOP_RARE_PRICE then
+		rareBuyBtn.Text = "Not enough coins"
+		rareBuyBtn.AutoButtonColor = false
+		rareBuyBtn.Active = false
+		rareBuyBtn.BackgroundColor3 = Color3.fromRGB(72, 72, 80)
+		rareBuyBtn.TextColor3 = Color3.fromRGB(170, 170, 178)
+	else
+		rareBuyBtn.Text = "Buy"
+		rareBuyBtn.AutoButtonColor = true
+		rareBuyBtn.Active = true
+		rareBuyBtn.BackgroundColor3 = Color3.fromRGB(70, 160, 95)
+		rareBuyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	end
+end
+
+local function playShopChestOpenAnim()
+	local g = Instance.new("ScreenGui")
+	g.Name = "ShopChestFlash"
+	g.ResetOnSpawn = false
+	g.DisplayOrder = 215
+	g.IgnoreGuiInset = true
+	g.Parent = playerGui
+	local flash = Instance.new("Frame")
+	flash.Size = UDim2.fromScale(1, 1)
+	flash.BackgroundColor3 = Color3.fromRGB(255, 210, 70)
+	flash.BackgroundTransparency = 0.25
+	flash.BorderSizePixel = 0
+	flash.Parent = g
+	TweenService:Create(flash, TweenInfo.new(0.38, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		BackgroundTransparency = 1,
+	}):Play()
+	task.delay(0.55, function()
+		if g.Parent then
+			g:Destroy()
+		end
+	end)
+end
+
+local function closeShop()
+	shopModal.Visible = false
+end
+
+shopDim.MouseButton1Click:Connect(closeShop)
+shopClose.MouseButton1Click:Connect(closeShop)
+
+local shopOpenBtn = Instance.new("TextButton")
+shopOpenBtn.Name = "ShopOpenButton"
+shopOpenBtn.AnchorPoint = Vector2.new(1, 1)
+shopOpenBtn.Position = UDim2.new(1, -12, 1, -12)
+shopOpenBtn.Size = UDim2.fromOffset(120, 36)
+shopOpenBtn.BackgroundColor3 = Color3.fromRGB(55, 48, 72)
+shopOpenBtn.TextColor3 = Color3.fromRGB(255, 220, 140)
+shopOpenBtn.Font = Enum.Font.GothamBold
+shopOpenBtn.TextSize = 16
+shopOpenBtn.Text = "Shop"
+shopOpenBtn.AutoButtonColor = true
+shopOpenBtn.Parent = shopGui
+
+local shopOpenCorner = Instance.new("UICorner")
+shopOpenCorner.CornerRadius = UDim.new(0, 8)
+shopOpenCorner.Parent = shopOpenBtn
+
+shopOpenBtn.MouseButton1Click:Connect(function()
+	shopModal.Visible = true
+	refreshShopBuyButtons()
+end)
+
+local function tryPurchaseChest(kind: string)
+	local ok = purchaseChest:InvokeServer(kind)
+	if typeof(ok) == "boolean" and ok then
+		playShopChestOpenAnim()
+	end
+	refreshShopBuyButtons()
+end
+
+commonBuyBtn.MouseButton1Click:Connect(function()
+	if commonBuyBtn.Active and currentCoins >= SHOP_COMMON_PRICE then
+		tryPurchaseChest("Common")
+	end
+end)
+
+rareBuyBtn.MouseButton1Click:Connect(function()
+	if rareBuyBtn.Active and currentCoins >= SHOP_RARE_PRICE then
+		tryPurchaseChest("Rare")
+	end
+end)
+
 pointsUpdate.OnClientEvent:Connect(function(points: number, level: number?)
 	local lv = if level ~= nil then level else 1
-	label.Text = string.format("Points: %d  ·  Lv. %d", points, lv)
+	setHudPointsLine(points, lv)
+end)
+
+coinsUpdated.OnClientEvent:Connect(function(coins: unknown)
+	if typeof(coins) == "number" then
+		setHudCoins(coins :: number)
+	end
+	if shopModal.Visible then
+		refreshShopBuyButtons()
+	end
 end)
 
 titleSync.OnClientEvent:Connect(function(title: unknown)

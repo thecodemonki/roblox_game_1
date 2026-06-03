@@ -20,6 +20,8 @@ local extinctionEvent = ReplicatedStorage:WaitForChild("ExtinctionEvent") :: Rem
 local lastPredator = ReplicatedStorage:WaitForChild("LastPredator") :: RemoteEvent
 local skinReceived = ReplicatedStorage:WaitForChild("SkinReceived") :: RemoteEvent
 local skinInventorySync = ReplicatedStorage:WaitForChild("SkinInventorySync") :: RemoteEvent
+local coinsUpdated = ReplicatedStorage:WaitForChild("CoinsUpdated") :: RemoteEvent
+local purchaseChest = ReplicatedStorage:WaitForChild("PurchaseChest") :: RemoteFunction
 
 local Bots = require(script:WaitForChild("Bots"))
 
@@ -80,6 +82,12 @@ local CHEST_OPEN_RANGE = 5
 local CHEST_RESPAWN_SEC = 60
 local CHEST_SIZE = 3
 local SKIN_MAX_LEVEL = 5
+local COINS_PLAYTIME_INTERVAL_SEC = 60
+local COINS_PER_PLAYTIME_BONUS = 10
+local COINS_PER_KILL = 5
+local COINS_PER_LEVEL_UP = 3
+local SHOP_CHEST_COMMON_PRICE = 50
+local SHOP_CHEST_RARE_PRICE = 150
 
 local ATTACK_RANGE = 8
 local ATTACK_HALF_ARC_DEG = 90 -- 180° total in front
@@ -114,6 +122,9 @@ local playerTitle: { [Player]: string } = {}
 local lastBotMeleeTime: { [Model]: number } = {}
 -- Skins: per player map skinName -> { level, rarity }
 local playerSkins: { [Player]: { [string]: { level: number, rarity: string } } } = {}
+local playerCoins: { [Player]: number } = {}
+local playerPlaytimeAccumSec: { [Player]: number } = {}
+local playerHeartbeatConn: { [Player]: RBXScriptConnection? } = {}
 
 local SKINS_COMMON = {
 	"Golden Chicken",
@@ -301,7 +312,8 @@ for slot = 1, CHEST_COUNT do
 	spawnChestAtSlot(slot)
 end
 
-local function rollRandomSkin(): (string, string)
+-- World chest + shop "Common" chest: 60% / 25% / 12% / 3%
+local function rollRandomSkinWorld(): (string, string)
 	local r = math.random(1, 100)
 	local rarity: string
 	local pool: { string }
@@ -312,6 +324,27 @@ local function rollRandomSkin(): (string, string)
 		rarity = "Rare"
 		pool = SKINS_RARE
 	elseif r <= 97 then
+		rarity = "Epic"
+		pool = SKINS_EPIC
+	else
+		rarity = "Legendary"
+		pool = SKINS_LEGENDARY
+	end
+	return pool[math.random(1, #pool)], rarity
+end
+
+-- Shop "Rare" chest: 20% / 50% / 25% / 5%
+local function rollRandomSkinShopRare(): (string, string)
+	local r = math.random(1, 100)
+	local rarity: string
+	local pool: { string }
+	if r <= 20 then
+		rarity = "Common"
+		pool = SKINS_COMMON
+	elseif r <= 70 then
+		rarity = "Rare"
+		pool = SKINS_RARE
+	elseif r <= 95 then
 		rarity = "Epic"
 		pool = SKINS_EPIC
 	else
@@ -347,12 +380,11 @@ local function syncSkinInventory(player: Player)
 end
 
 -- kind: "new" | "level_up" | "duplicate_max"
-local function grantRandomSkinFromChest(player: Player)
+local function grantSkinFromRoll(player: Player, skinName: string, rolledRarity: string)
 	local inv = playerSkins[player]
 	if not inv then
 		return
 	end
-	local skinName, rolledRarity = rollRandomSkin()
 	local existing = inv[skinName]
 	local rarity: string
 	local level: number
@@ -375,6 +407,11 @@ local function grantRandomSkinFromChest(player: Player)
 	end
 	skinReceived:FireClient(player, skinName, rarity, level, kind)
 	syncSkinInventory(player)
+end
+
+local function grantRandomSkinFromChest(player: Player)
+	local skinName, rolledRarity = rollRandomSkinWorld()
+	grantSkinFromRoll(player, skinName, rolledRarity)
 end
 
 local function tryOpenNearbyChest(player: Player, rootPos: Vector3)
@@ -416,6 +453,14 @@ local function handlePlayerDeath(player: Player, character: Model)
 	playerDied:FireClient(player, newLevel)
 end
 
+local function addCoins(player: Player, delta: number)
+	if playerCoins[player] == nil then
+		return
+	end
+	playerCoins[player] = playerCoins[player] + delta
+	coinsUpdated:FireClient(player, playerCoins[player])
+end
+
 local function syncPointsAndLevel(player: Player)
 	local points = playerPoints[player]
 	if points == nil then
@@ -426,6 +471,7 @@ local function syncPointsAndLevel(player: Player)
 	local prev = playerLevel[player] or 1
 	if newLevel > prev then
 		playerLevel[player] = newLevel
+		addCoins(player, COINS_PER_LEVEL_UP)
 		local choices = AnimalPools.sampleChoicesForLevel(newLevel)
 		pendingEvolution[player] = {
 			choices = choices,
@@ -595,6 +641,7 @@ local function grantBotKill(attacker: Player, botDisplayName: string)
 	addPoints(attacker, POINTS_PER_KILL)
 	playerKilled:FireClient(attacker, "killer", botDisplayName, POINTS_PER_KILL)
 	checkKillTitles(attacker, oldK, playerKills[attacker] :: number)
+	addCoins(attacker, COINS_PER_KILL)
 end
 
 local function onPlayerKill(attacker: Player, victim: Player)
@@ -604,6 +651,7 @@ local function onPlayerKill(attacker: Player, victim: Player)
 	playerKilled:FireClient(attacker, "killer", victim.Name, POINTS_PER_KILL)
 	playerKilled:FireClient(victim, "victim", attacker.Name)
 	checkKillTitles(attacker, oldK, playerKills[attacker] :: number)
+	addCoins(attacker, COINS_PER_KILL)
 end
 
 local function tryMeleeAttack(attacker: Player)
@@ -702,10 +750,13 @@ local function onPlayerAdded(player)
 	playerLastAttack[player] = 0
 	playerTitle[player] = titleFromKills(0)
 	playerSkins[player] = {}
+	playerCoins[player] = 0
+	playerPlaytimeAccumSec[player] = 0
 	print(player.Name .. " joined. Points: 0")
 	pointsUpdate:FireClient(player, 0, 1)
 	titleSync:FireClient(player, playerTitle[player] :: string)
 	syncSkinInventory(player)
+	coinsUpdated:FireClient(player, 0)
 
 	-- When character spawns
 	player.CharacterAdded:Connect(function(character)
@@ -726,9 +777,24 @@ local function onPlayerAdded(player)
 
 		local rootPart = character:WaitForChild("HumanoidRootPart")
 
-		-- Check for food collision every frame
-		RunService.Heartbeat:Connect(function()
-			if not character or not character.Parent then return end
+		local oldHb = playerHeartbeatConn[player]
+		if oldHb then
+			oldHb:Disconnect()
+			playerHeartbeatConn[player] = nil
+		end
+
+		-- Food, world chests, playtime coins (one loop per active character)
+		playerHeartbeatConn[player] = RunService.Heartbeat:Connect(function(dt: number)
+			if not character or not character.Parent then
+				return
+			end
+
+			local acc = (playerPlaytimeAccumSec[player] or 0) + dt
+			while acc >= COINS_PLAYTIME_INTERVAL_SEC do
+				acc = acc - COINS_PLAYTIME_INTERVAL_SEC
+				addCoins(player, COINS_PER_PLAYTIME_BONUS)
+			end
+			playerPlaytimeAccumSec[player] = acc
 
 			for _, food in ipairs(foodFolder:GetChildren()) do
 				if food:IsA("BasePart") then
@@ -761,6 +827,13 @@ local function onPlayerRemoving(player)
 	playerLastAttack[player] = nil
 	playerTitle[player] = nil
 	playerSkins[player] = nil
+	playerCoins[player] = nil
+	playerPlaytimeAccumSec[player] = nil
+	local hb = playerHeartbeatConn[player]
+	if hb then
+		hb:Disconnect()
+	end
+	playerHeartbeatConn[player] = nil
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
@@ -801,6 +874,41 @@ animalPicked.OnServerEvent:Connect(function(player: Player, animalName: unknown)
 		applyPacifistGlow(character)
 	end
 end)
+
+purchaseChest.OnServerInvoke = function(player: Player, chestKind: unknown): boolean
+	if typeof(chestKind) ~= "string" then
+		return false
+	end
+	local k = chestKind :: string
+	if k ~= "Common" and k ~= "Rare" then
+		return false
+	end
+	if playerCoins[player] == nil or playerSkins[player] == nil then
+		return false
+	end
+	local price = if k == "Rare" then SHOP_CHEST_RARE_PRICE else SHOP_CHEST_COMMON_PRICE end
+	if playerCoins[player] < price then
+		return false
+	end
+	playerCoins[player] = playerCoins[player] - price
+	coinsUpdated:FireClient(player, playerCoins[player])
+
+	local skinName: string
+	local rolledRarity: string
+	if k == "Rare" then
+		skinName, rolledRarity = rollRandomSkinShopRare()
+	else
+		skinName, rolledRarity = rollRandomSkinWorld()
+	end
+
+	task.defer(function()
+		task.wait(0.42)
+		if player.Parent and playerSkins[player] then
+			grantSkinFromRoll(player, skinName, rolledRarity)
+		end
+	end)
+	return true
+end
 
 Bots.setup({
 	foodFolder = foodFolder,

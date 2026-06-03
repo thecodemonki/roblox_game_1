@@ -5,8 +5,14 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local AnimalPools = require(Shared:WaitForChild("AnimalPools"))
+
 local pointsUpdate = ReplicatedStorage:WaitForChild("PointsUpdate") :: RemoteEvent
 local levelUp = ReplicatedStorage:WaitForChild("LevelUp") :: RemoteEvent
+local animalPicked = ReplicatedStorage:WaitForChild("AnimalPicked") :: RemoteEvent
+
+local EVOLUTION_FF_NAME = "EvolutionPickShield"
 
 -- Level curve: piecewise linear between (points, level) anchors; below 10 pts stays level 1.
 local LEVEL_ANCHORS = {
@@ -47,6 +53,47 @@ local RESPAWN_DELAY = 3      -- seconds before pellet respawns
 -- Storage
 local playerPoints = {}
 local playerLevel = {} -- last synced level (for LevelUp detection)
+local pendingEvolution: { [Player]: { choices: { { name: string, ability: string } }, expires: number } } = {}
+local playerAnimal: { [Player]: string } = {}
+
+local function addPickShield(player: Player)
+	local character = player.Character
+	if not character then
+		return
+	end
+	if character:FindFirstChild(EVOLUTION_FF_NAME) then
+		return
+	end
+	local ff = Instance.new("ForceField")
+	ff.Name = EVOLUTION_FF_NAME
+	ff.Parent = character
+end
+
+local function removePickShield(character: Model)
+	local ff = character:FindFirstChild(EVOLUTION_FF_NAME)
+	if ff then
+		ff:Destroy()
+	end
+end
+
+local function applyPacifistGlow(character: Model)
+	local existing = character:FindFirstChild("EvolutionPacifistGlow")
+	if existing then
+		existing:Destroy()
+	end
+	local h = Instance.new("Highlight")
+	h.Name = "EvolutionPacifistGlow"
+	h.FillColor = Color3.fromRGB(255, 220, 50)
+	h.OutlineColor = Color3.fromRGB(255, 200, 0)
+	h.FillTransparency = 0.5
+	h.OutlineTransparency = 0.3
+	h.Parent = character
+	task.delay(3, function()
+		if h.Parent then
+			h:Destroy()
+		end
+	end)
+end
 
 -- Create food folder
 local foodFolder = Instance.new("Folder")
@@ -87,7 +134,13 @@ local function syncPointsAndLevel(player: Player)
 	local prev = playerLevel[player] or 1
 	if newLevel > prev then
 		playerLevel[player] = newLevel
-		levelUp:FireClient(player, newLevel)
+		local choices = AnimalPools.sampleChoicesForLevel(newLevel)
+		pendingEvolution[player] = {
+			choices = choices,
+			expires = tick() + 60,
+		}
+		addPickShield(player)
+		levelUp:FireClient(player, newLevel, choices)
 	else
 		playerLevel[player] = newLevel
 	end
@@ -111,6 +164,12 @@ local function onPlayerAdded(player)
 
 	-- When character spawns
 	player.CharacterAdded:Connect(function(character)
+		if pendingEvolution[player] then
+			task.defer(function()
+				addPickShield(player)
+			end)
+		end
+
 		local humanoid = character:WaitForChild("Humanoid")
 		local rootPart = character:WaitForChild("HumanoidRootPart")
 
@@ -141,7 +200,41 @@ end
 local function onPlayerRemoving(player)
 	playerPoints[player] = nil
 	playerLevel[player] = nil
+	pendingEvolution[player] = nil
+	playerAnimal[player] = nil
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
 Players.PlayerRemoving:Connect(onPlayerRemoving)
+
+animalPicked.OnServerEvent:Connect(function(player: Player, animalName: unknown)
+	if typeof(animalName) ~= "string" then
+		return
+	end
+	local pending = pendingEvolution[player]
+	if not pending then
+		return
+	end
+	if tick() > pending.expires then
+		pendingEvolution[player] = nil
+		return
+	end
+	if not AnimalPools.isNameInChoices(animalName :: string, pending.choices) then
+		return
+	end
+	pendingEvolution[player] = nil
+
+	local character = player.Character
+	if character then
+		removePickShield(character)
+	end
+
+	playerAnimal[player] = animalName :: string
+
+	local now = workspace:GetServerTimeNow()
+	player:SetAttribute("PacifistUntil", now + 3)
+
+	if character then
+		applyPacifistGlow(character)
+	end
+end)

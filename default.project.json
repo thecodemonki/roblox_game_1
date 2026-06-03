@@ -12,6 +12,9 @@
       },
       "LevelUp": {
         "$className": "RemoteEvent"
+      },
+      "AnimalPicked": {
+        "$className": "RemoteEvent"
       }
     },
 

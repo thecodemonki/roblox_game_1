@@ -14,6 +14,12 @@ local animalPicked = ReplicatedStorage:WaitForChild("AnimalPicked") :: RemoteEve
 local playerDied = ReplicatedStorage:WaitForChild("PlayerDied") :: RemoteEvent
 local attackRequest = ReplicatedStorage:WaitForChild("AttackRequest") :: RemoteEvent
 local playerKilled = ReplicatedStorage:WaitForChild("PlayerKilled") :: RemoteEvent
+local titleSync = ReplicatedStorage:WaitForChild("TitleSync") :: RemoteEvent
+local titleUnlocked = ReplicatedStorage:WaitForChild("TitleUnlocked") :: RemoteEvent
+local extinctionEvent = ReplicatedStorage:WaitForChild("ExtinctionEvent") :: RemoteEvent
+local lastPredator = ReplicatedStorage:WaitForChild("LastPredator") :: RemoteEvent
+
+local Bots = require(script:WaitForChild("Bots"))
 
 local EVOLUTION_FF_NAME = "EvolutionPickShield"
 
@@ -65,6 +71,7 @@ local FOOD_SIZE = 2          -- size of each pellet
 local MAP_SIZE = 200         -- how big the map is
 local POINTS_PER_FOOD = 1    -- points per pellet eaten
 local POINTS_PER_KILL = 15
+local BOT_MELEE_COOLDOWN = 1.5
 local RESPAWN_DELAY = 3      -- seconds before pellet respawns
 
 local ATTACK_RANGE = 8
@@ -76,6 +83,18 @@ local TIER_COMBAT: { [number]: { damage: number, cooldown: number } } = {
 	[3] = { damage = 28, cooldown = 0.8 },
 }
 
+-- Kill titles (milestones); playerKills persists through death.
+local TITLE_MILESTONES = {
+	{ k = 0, title = "Fresh Prey" },
+	{ k = 5, title = "Scavenger" },
+	{ k = 25, title = "Pack Hunter" },
+	{ k = 100, title = "Apex" },
+	{ k = 300, title = "Shadow Predator" },
+	{ k = 750, title = "Void Hunter" },
+	{ k = 2000, title = "Extinction Event", extinction = true },
+	{ k = 5000, title = "The Last Predator", lastPredator = true },
+}
+
 -- Storage
 local playerPoints = {}
 local playerLevel = {} -- last synced level (for LevelUp detection)
@@ -84,6 +103,8 @@ local playerAnimal: { [Player]: string } = {}
 -- Kill title progress: persists through death (handlePlayerDeath does not reset this).
 local playerKills: { [Player]: number } = {}
 local playerLastAttack: { [Player]: number } = {}
+local playerTitle: { [Player]: string } = {}
+local lastBotMeleeTime: { [Model]: number } = {}
 
 local function addPickShield(player: Player)
 	local character = player.Character
@@ -282,11 +303,129 @@ local function isTargetInMeleeCone(attackerRoot: BasePart, targetPosition: Vecto
 	return ang <= ATTACK_HALF_ARC_DEG
 end
 
+local function titleFromKills(kills: number): string
+	local t = "Fresh Prey"
+	for _, row in ipairs(TITLE_MILESTONES) do
+		if kills >= row.k then
+			t = row.title
+		end
+	end
+	return t
+end
+
+local function checkKillTitles(player: Player, oldKills: number, newKills: number)
+	for _, row in ipairs(TITLE_MILESTONES) do
+		if row.k > 0 and newKills >= row.k and oldKills < row.k then
+			titleUnlocked:FireClient(player, row.title)
+			if row.extinction then
+				extinctionEvent:FireAllClients(player.Name)
+			end
+			if row.lastPredator then
+				lastPredator:FireAllClients(player.Name)
+			end
+		end
+	end
+	local t = titleFromKills(newKills)
+	playerTitle[player] = t
+	titleSync:FireClient(player, t)
+end
+
+local function getNearestPlayerRoot(fromPos: Vector3, maxDist: number): (Player?, BasePart?)
+	local bestP: Player? = nil
+	local bestR: BasePart? = nil
+	local bestD = maxDist + 1
+	for _, plr in Players:GetPlayers() do
+		local ch = plr.Character
+		if ch then
+			local r = ch:FindFirstChild("HumanoidRootPart") :: BasePart?
+			local h = ch:FindFirstChildOfClass("Humanoid")
+			if r and h and h.Health > 0 then
+				local d = (r.Position - fromPos).Magnitude
+				if d <= maxDist and d < bestD then
+					bestD = d
+					bestP = plr
+					bestR = r
+				end
+			end
+		end
+	end
+	return bestP, bestR
+end
+
+local function damagePlayerFromBot(_botModel: Model, target: Player, damage: number)
+	local ch = target.Character
+	if not ch then
+		return
+	end
+	local hum = ch:FindFirstChildOfClass("Humanoid")
+	local rootP = ch:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not hum or not rootP or hum.Health <= 0 then
+		return
+	end
+	local now = workspace:GetServerTimeNow()
+	local pac = target:GetAttribute("PacifistUntil")
+	if typeof(pac) == "number" and now < pac then
+		return
+	end
+	local newHealth = hum.Health - damage
+	flashCombatHit(ch)
+	showFloatingDamage(rootP, damage)
+	if newHealth <= 0 then
+		hum.Health = 0
+	else
+		hum.Health = newHealth
+	end
+end
+
+local function tryBotMelee(botModel: Model, damage: number)
+	local tnow = tick()
+	local last = lastBotMeleeTime[botModel] or 0
+	if tnow - last < BOT_MELEE_COOLDOWN then
+		return
+	end
+	lastBotMeleeTime[botModel] = tnow
+
+	local humB = botModel:FindFirstChildOfClass("Humanoid")
+	local rootB = botModel:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not humB or not rootB or humB.Health <= 0 then
+		return
+	end
+
+	for _, plr in Players:GetPlayers() do
+		if playerPoints[plr] == nil then
+			continue
+		end
+		local ch = plr.Character
+		if not ch then
+			continue
+		end
+		local humP = ch:FindFirstChildOfClass("Humanoid")
+		local rootP = ch:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not humP or not rootP or humP.Health <= 0 then
+			continue
+		end
+		if not isTargetInMeleeCone(rootB, rootP.Position) then
+			continue
+		end
+		damagePlayerFromBot(botModel, plr, damage)
+	end
+end
+
+local function grantBotKill(attacker: Player, botDisplayName: string)
+	local oldK = playerKills[attacker] or 0
+	playerKills[attacker] = oldK + 1
+	addPoints(attacker, POINTS_PER_KILL)
+	playerKilled:FireClient(attacker, "killer", botDisplayName, POINTS_PER_KILL)
+	checkKillTitles(attacker, oldK, playerKills[attacker] :: number)
+end
+
 local function onPlayerKill(attacker: Player, victim: Player)
-	playerKills[attacker] = (playerKills[attacker] or 0) + 1
+	local oldK = playerKills[attacker] or 0
+	playerKills[attacker] = oldK + 1
 	addPoints(attacker, POINTS_PER_KILL)
 	playerKilled:FireClient(attacker, "killer", victim.Name, POINTS_PER_KILL)
 	playerKilled:FireClient(victim, "victim", attacker.Name)
+	checkKillTitles(attacker, oldK, playerKills[attacker] :: number)
 end
 
 local function tryMeleeAttack(attacker: Player)
@@ -349,6 +488,32 @@ local function tryMeleeAttack(attacker: Player)
 			humB.Health = newHealth
 		end
 	end
+
+	for _, botModel in ipairs(Bots.iterBotModels()) do
+		local humB = botModel:FindFirstChildOfClass("Humanoid")
+		local rootB = botModel:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not humB or not rootB or humB.Health <= 0 then
+			continue
+		end
+		if not isTargetInMeleeCone(rootA, rootB.Position) then
+			continue
+		end
+
+		Bots.setLastAttacker(botModel, attacker)
+
+		local newHealth = humB.Health - damage
+		flashCombatHit(botModel)
+		showFloatingDamage(rootB, damage)
+
+		if newHealth <= 0 then
+			local dn = botModel:GetAttribute("DisplayBotName")
+			local displayName = if typeof(dn) == "string" then dn :: string else botModel.Name
+			grantBotKill(attacker, displayName)
+			humB.Health = 0
+		else
+			humB.Health = newHealth
+		end
+	end
 end
 
 -- Setup player when they join
@@ -357,8 +522,10 @@ local function onPlayerAdded(player)
 	playerLevel[player] = 1
 	playerKills[player] = 0
 	playerLastAttack[player] = 0
+	playerTitle[player] = titleFromKills(0)
 	print(player.Name .. " joined. Points: 0")
 	pointsUpdate:FireClient(player, 0, 1)
+	titleSync:FireClient(player, playerTitle[player] :: string)
 
 	-- When character spawns
 	player.CharacterAdded:Connect(function(character)
@@ -410,6 +577,7 @@ local function onPlayerRemoving(player)
 	playerAnimal[player] = nil
 	playerKills[player] = nil
 	playerLastAttack[player] = nil
+	playerTitle[player] = nil
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
@@ -448,5 +616,33 @@ animalPicked.OnServerEvent:Connect(function(player: Player, animalName: unknown)
 
 	if character then
 		applyPacifistGlow(character)
+	end
+end)
+
+Bots.setup({
+	foodFolder = foodFolder,
+	mapHalf = MAP_SIZE,
+	foodRespawnDelay = RESPAWN_DELAY,
+	spawnFood = spawnFood,
+	getNearestPlayerRoot = getNearestPlayerRoot,
+	damagePlayerFromBot = damagePlayerFromBot,
+	tryBotMelee = tryBotMelee,
+	onBotUnregistered = function(m: Model)
+		lastBotMeleeTime[m] = nil
+	end,
+})
+
+task.defer(function()
+	Bots.ensureComposition()
+end)
+
+RunService.Heartbeat:Connect(function(dt: number)
+	Bots.onHeartbeat(dt)
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(12)
+		Bots.ensureComposition()
 	end
 end)

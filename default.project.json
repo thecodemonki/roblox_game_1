@@ -24,6 +24,18 @@
       },
       "PlayerKilled": {
         "$className": "RemoteEvent"
+      },
+      "TitleSync": {
+        "$className": "RemoteEvent"
+      },
+      "TitleUnlocked": {
+        "$className": "RemoteEvent"
+      },
+      "ExtinctionEvent": {
+        "$className": "RemoteEvent"
+      },
+      "LastPredator": {
+        "$className": "RemoteEvent"
       }
     },
 

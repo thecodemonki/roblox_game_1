@@ -11,6 +11,10 @@ local animalPicked = ReplicatedStorage:WaitForChild("AnimalPicked") :: RemoteEve
 local playerDied = ReplicatedStorage:WaitForChild("PlayerDied") :: RemoteEvent
 local attackRequest = ReplicatedStorage:WaitForChild("AttackRequest") :: RemoteEvent
 local playerKilled = ReplicatedStorage:WaitForChild("PlayerKilled") :: RemoteEvent
+local titleSync = ReplicatedStorage:WaitForChild("TitleSync") :: RemoteEvent
+local titleUnlocked = ReplicatedStorage:WaitForChild("TitleUnlocked") :: RemoteEvent
+local extinctionEvent = ReplicatedStorage:WaitForChild("ExtinctionEvent") :: RemoteEvent
+local lastPredator = ReplicatedStorage:WaitForChild("LastPredator") :: RemoteEvent
 
 local playerGui = player:WaitForChild("PlayerGui")
 
@@ -35,6 +39,19 @@ label.TextColor3 = Color3.fromRGB(255, 255, 255)
 label.TextSize = 20
 label.TextXAlignment = Enum.TextXAlignment.Right
 label.Parent = screenGui
+
+local titleHudLabel = Instance.new("TextLabel")
+titleHudLabel.Name = "TitleHud"
+titleHudLabel.AnchorPoint = Vector2.new(1, 0)
+titleHudLabel.Position = UDim2.new(1, -12, 0, 50)
+titleHudLabel.Size = UDim2.fromOffset(300, 22)
+titleHudLabel.BackgroundTransparency = 1
+titleHudLabel.Font = Enum.Font.GothamMedium
+titleHudLabel.Text = "Fresh Prey"
+titleHudLabel.TextColor3 = Color3.fromRGB(200, 200, 210)
+titleHudLabel.TextSize = 16
+titleHudLabel.TextXAlignment = Enum.TextXAlignment.Right
+titleHudLabel.Parent = screenGui
 
 local corner = Instance.new("UICorner")
 corner.CornerRadius = UDim.new(0, 6)
@@ -119,6 +136,12 @@ player.CharacterAdded:Connect(onLocalCharacterAdded)
 pointsUpdate.OnClientEvent:Connect(function(points: number, level: number?)
 	local lv = if level ~= nil then level else 1
 	label.Text = string.format("Points: %d  ·  Lv. %d", points, lv)
+end)
+
+titleSync.OnClientEvent:Connect(function(title: unknown)
+	if typeof(title) == "string" then
+		titleHudLabel.Text = title :: string
+	end
 end)
 
 type AnimalChoice = { name: string, ability: string }
@@ -453,6 +476,150 @@ playerKilled.OnClientEvent:Connect(function(role: unknown, otherName: unknown, p
 			Color3.fromRGB(220, 45, 45),
 			2
 		)
+	end
+end)
+
+local function showTitleUnlockedPopup(titleName: string)
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "TitleUnlockedPopup"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 320
+	gui.IgnoreGuiInset = true
+	gui.Parent = playerGui
+
+	local msg = Instance.new("TextLabel")
+	msg.AnchorPoint = Vector2.new(0.5, 0.5)
+	msg.Position = UDim2.new(0.5, 0, 0.5, 0)
+	msg.Size = UDim2.fromOffset(920, 100)
+	msg.BackgroundTransparency = 1
+	msg.Font = Enum.Font.GothamBlack
+	msg.TextSize = 40
+	msg.TextColor3 = Color3.fromRGB(255, 215, 100)
+	msg.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	msg.TextStrokeTransparency = 0.35
+	msg.Text = "Title Unlocked: " .. titleName
+	msg.Parent = gui
+
+	local tween = TweenService:Create(
+		msg,
+		TweenInfo.new(3, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+		{ TextTransparency = 1, TextStrokeTransparency = 1 }
+	)
+	tween.Completed:Connect(function()
+		if gui.Parent then
+			gui:Destroy()
+		end
+	end)
+	tween:Play()
+end
+
+local function showExtinctionAnnounce(who: string)
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "ExtinctionAnnounce"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 400
+	gui.IgnoreGuiInset = true
+	gui.Parent = playerGui
+
+	local flash = Instance.new("Frame")
+	flash.Name = "RedFlash"
+	flash.Size = UDim2.fromScale(1, 1)
+	flash.BackgroundColor3 = Color3.fromRGB(220, 30, 30)
+	flash.BackgroundTransparency = 0.65
+	flash.BorderSizePixel = 0
+	flash.Parent = gui
+
+	TweenService:Create(flash, TweenInfo.new(0.28, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		BackgroundTransparency = 1,
+	}):Play()
+
+	local msg = Instance.new("TextLabel")
+	msg.AnchorPoint = Vector2.new(0.5, 0.45)
+	msg.Position = UDim2.new(0.5, 0, 0.45, 0)
+	msg.Size = UDim2.fromOffset(950, 120)
+	msg.BackgroundTransparency = 1
+	msg.Font = Enum.Font.GothamBlack
+	msg.TextSize = 34
+	msg.TextWrapped = true
+	msg.TextColor3 = Color3.fromRGB(255, 90, 90)
+	msg.TextStrokeTransparency = 0.4
+	msg.Text = string.format("%s is an Extinction Event — run.", who)
+	msg.Parent = gui
+
+	local tw = TweenService:Create(
+		msg,
+		TweenInfo.new(4, Enum.EasingStyle.Linear, Enum.EasingDirection.In),
+		{ TextTransparency = 1, TextStrokeTransparency = 1 }
+	)
+	tw.Completed:Connect(function()
+		if gui.Parent then
+			gui:Destroy()
+		end
+	end)
+	tw:Play()
+end
+
+local function showLastPredatorAnnounce(who: string)
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "LastPredatorAnnounce"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 410
+	gui.IgnoreGuiInset = true
+	gui.Parent = playerGui
+
+	local flash = Instance.new("Frame")
+	flash.Name = "GoldFlash"
+	flash.Size = UDim2.fromScale(1, 1)
+	flash.BackgroundColor3 = Color3.fromRGB(255, 210, 80)
+	flash.BackgroundTransparency = 0.7
+	flash.BorderSizePixel = 0
+	flash.Parent = gui
+
+	TweenService:Create(flash, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		BackgroundTransparency = 1,
+	}):Play()
+
+	local msg = Instance.new("TextLabel")
+	msg.AnchorPoint = Vector2.new(0.5, 0.45)
+	msg.Position = UDim2.new(0.5, 0, 0.45, 0)
+	msg.Size = UDim2.fromOffset(950, 120)
+	msg.BackgroundTransparency = 1
+	msg.Font = Enum.Font.GothamBlack
+	msg.TextSize = 36
+	msg.TextWrapped = true
+	msg.TextColor3 = Color3.fromRGB(255, 220, 120)
+	msg.TextStrokeTransparency = 0.35
+	msg.Text = string.format("%s is The Last Predator", who)
+	msg.Parent = gui
+
+	local tw = TweenService:Create(
+		msg,
+		TweenInfo.new(5, Enum.EasingStyle.Linear, Enum.EasingDirection.In),
+		{ TextTransparency = 1, TextStrokeTransparency = 1 }
+	)
+	tw.Completed:Connect(function()
+		if gui.Parent then
+			gui:Destroy()
+		end
+	end)
+	tw:Play()
+end
+
+titleUnlocked.OnClientEvent:Connect(function(titleName: unknown)
+	if typeof(titleName) == "string" then
+		showTitleUnlockedPopup(titleName :: string)
+	end
+end)
+
+extinctionEvent.OnClientEvent:Connect(function(who: unknown)
+	if typeof(who) == "string" then
+		showExtinctionAnnounce(who :: string)
+	end
+end)
+
+lastPredator.OnClientEvent:Connect(function(who: unknown)
+	if typeof(who) == "string" then
+		showLastPredatorAnnounce(who :: string)
 	end
 end)
 

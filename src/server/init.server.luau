@@ -24,6 +24,9 @@ local coinsUpdated = ReplicatedStorage:WaitForChild("CoinsUpdated") :: RemoteEve
 local purchaseChest = ReplicatedStorage:WaitForChild("PurchaseChest") :: RemoteFunction
 local survivalBonus = ReplicatedStorage:WaitForChild("SurvivalBonus") :: RemoteEvent
 local survivalStreakSync = ReplicatedStorage:WaitForChild("SurvivalStreakSync") :: RemoteEvent
+local roundEnd = ReplicatedStorage:WaitForChild("RoundEnd") :: RemoteEvent
+local voidBeastUnlocked = ReplicatedStorage:WaitForChild("VoidBeastUnlocked") :: RemoteEvent
+local rankedTimerSync = ReplicatedStorage:WaitForChild("RankedTimerSync") :: RemoteEvent
 
 local Bots = require(script:WaitForChild("Bots"))
 
@@ -100,6 +103,11 @@ local SURVIVAL_BONUS_10M = 600
 local CROWN_REEVAL_INTERVAL = 0.4
 local SURVIVAL_SYNC_INTERVAL = 1
 
+local RANKED_ROUND_SEC = 900
+local RANKED_POINTS_KILL = 10
+local RANKED_POINTS_EVOLUTION = 15
+local RANKED_SURVIVE_SEC = 30
+
 local ATTACK_RANGE = 8
 local ATTACK_HALF_ARC_DEG = 90 -- 180° total in front
 
@@ -142,6 +150,13 @@ local playerPlaytimeMilestonesDone: { [Player]: { [string]: boolean } } = {}
 -- Current life survival streak (seconds); resets on death.
 local playerSurvivalSec: { [Player]: number } = {}
 local playerLastSurvivalStreakSync: { [Player]: number } = {}
+
+-- Rolling 15-minute ranked rounds (separate score from endless).
+local rankedRoundStart = tick()
+local lastRankedRoundIndex = 0
+local playerRankedPoints: { [Player]: number } = {}
+local playerRankedSurvivalAccum: { [Player]: number } = {}
+local playerRankedWinStreak: { [Player]: number } = {}
 
 local SKINS_COMMON = {
 	"Golden Chicken",
@@ -670,6 +685,87 @@ local function checkSurvivalMilestones(player: Player, prevS: number, newS: numb
 	end
 end
 
+local function addRankedPoints(player: Player, delta: number)
+	if playerRankedPoints[player] == nil or delta == 0 then
+		return
+	end
+	playerRankedPoints[player] = (playerRankedPoints[player] :: number) + delta
+end
+
+local function getRankedTimeRemainingSec(): number
+	local elapsed = (tick() - rankedRoundStart) % RANKED_ROUND_SEC
+	return math.max(0, math.floor(RANKED_ROUND_SEC - elapsed))
+end
+
+local function endRankedRound()
+	local rows: { { p: Player, score: number } } = {}
+	for _, plr in Players:GetPlayers() do
+		if playerRankedPoints[plr] ~= nil then
+			table.insert(rows, { p = plr, score = playerRankedPoints[plr] :: number })
+		end
+	end
+	table.sort(rows, function(a, b)
+		if a.score ~= b.score then
+			return a.score > b.score
+		end
+		return a.p.UserId < b.p.UserId
+	end)
+
+	local payload: { { place: number, name: string, score: number, reward: string } } = {}
+
+	for i = 1, math.min(3, #rows) do
+		local r = rows[i]
+		local rewardLabel: string
+		if i == 1 then
+			rewardLabel = "Epic chest + 50 coins"
+			local sn, rr = rollPlaytimeEpicChest()
+			grantSkinFromRoll(r.p, sn, rr)
+			addCoins(r.p, 50)
+		elseif i == 2 then
+			rewardLabel = "Rare chest + 25 coins"
+			local sn, rr = rollRandomSkinShopRare()
+			grantSkinFromRoll(r.p, sn, rr)
+			addCoins(r.p, 25)
+		else
+			rewardLabel = "Common chest + 10 coins"
+			local sn, rr = rollRandomSkinWorld()
+			grantSkinFromRoll(r.p, sn, rr)
+			addCoins(r.p, 10)
+		end
+		table.insert(payload, {
+			place = i,
+			name = r.p.Name,
+			score = r.score,
+			reward = rewardLabel,
+		})
+	end
+
+	for _, plr in Players:GetPlayers() do
+		if playerRankedWinStreak[plr] == nil then
+			continue
+		end
+		if #rows >= 1 and plr == rows[1].p then
+			local w = (playerRankedWinStreak[plr] :: number) + 1
+			playerRankedWinStreak[plr] = w
+			if w >= 3 then
+				voidBeastUnlocked:FireClient(plr)
+				playerRankedWinStreak[plr] = 0
+			end
+		else
+			playerRankedWinStreak[plr] = 0
+		end
+	end
+
+	roundEnd:FireAllClients(payload)
+
+	for _, plr in Players:GetPlayers() do
+		if playerRankedPoints[plr] ~= nil then
+			playerRankedPoints[plr] = 0
+			playerRankedSurvivalAccum[plr] = 0
+		end
+	end
+end
+
 local function getCombatStatsForPlayer(player: Player): (number, number)
 	local level = getLevelFromPoints(playerPoints[player] or 0)
 	local tier = AnimalPools.getTierForLevel(level)
@@ -819,6 +915,7 @@ local function grantBotKill(attacker: Player, botDisplayName: string)
 	playerKilled:FireClient(attacker, "killer", botDisplayName, POINTS_PER_KILL)
 	checkKillTitles(attacker, oldK, playerKills[attacker] :: number)
 	addCoins(attacker, COINS_PER_KILL)
+	addRankedPoints(attacker, RANKED_POINTS_KILL)
 end
 
 local function onPlayerKill(attacker: Player, victim: Player)
@@ -829,6 +926,7 @@ local function onPlayerKill(attacker: Player, victim: Player)
 	playerKilled:FireClient(victim, "victim", attacker.Name)
 	checkKillTitles(attacker, oldK, playerKills[attacker] :: number)
 	addCoins(attacker, COINS_PER_KILL)
+	addRankedPoints(attacker, RANKED_POINTS_KILL)
 end
 
 local function tryMeleeAttack(attacker: Player)
@@ -933,12 +1031,16 @@ local function onPlayerAdded(player)
 	playerPlaytimeMilestonesDone[player] = {}
 	playerSurvivalSec[player] = 0
 	playerLastSurvivalStreakSync[player] = 0
+	playerRankedPoints[player] = 0
+	playerRankedSurvivalAccum[player] = 0
+	playerRankedWinStreak[player] = 0
 	print(player.Name .. " joined. Points: 0")
 	pointsUpdate:FireClient(player, 0, 1)
 	titleSync:FireClient(player, playerTitle[player] :: string)
 	syncSkinInventory(player)
 	coinsUpdated:FireClient(player, 0)
 	survivalStreakSync:FireClient(player, 0)
+	rankedTimerSync:FireClient(player, getRankedTimeRemainingSec())
 
 	-- When character spawns
 	player.CharacterAdded:Connect(function(character)
@@ -1000,6 +1102,13 @@ local function onPlayerAdded(player)
 					survivalStreakSync:FireClient(player, math.floor(newSurv))
 				end
 
+				local rAcc = (playerRankedSurvivalAccum[player] or 0) + dt
+				while rAcc >= RANKED_SURVIVE_SEC do
+					rAcc = rAcc - RANKED_SURVIVE_SEC
+					addRankedPoints(player, 1)
+				end
+				playerRankedSurvivalAccum[player] = rAcc
+
 				updateSurvivalCrownThrottled()
 			end
 
@@ -1040,6 +1149,9 @@ local function onPlayerRemoving(player)
 	playerPlaytimeMilestonesDone[player] = nil
 	playerSurvivalSec[player] = nil
 	playerLastSurvivalStreakSync[player] = nil
+	playerRankedPoints[player] = nil
+	playerRankedSurvivalAccum[player] = nil
+	playerRankedWinStreak[player] = nil
 	if crownLeader == player then
 		local ch = player.Character
 		if ch then
@@ -1092,6 +1204,8 @@ animalPicked.OnServerEvent:Connect(function(player: Player, animalName: unknown)
 	if character then
 		applyPacifistGlow(character)
 	end
+
+	addRankedPoints(player, RANKED_POINTS_EVOLUTION)
 end)
 
 purchaseChest.OnServerInvoke = function(player: Player, chestKind: unknown): boolean
@@ -1128,6 +1242,20 @@ purchaseChest.OnServerInvoke = function(player: Player, chestKind: unknown): boo
 	end)
 	return true
 end
+
+lastRankedRoundIndex = math.floor((tick() - rankedRoundStart) / RANKED_ROUND_SEC)
+task.spawn(function()
+	rankedTimerSync:FireAllClients(getRankedTimeRemainingSec())
+	while true do
+		task.wait(1)
+		local idx = math.floor((tick() - rankedRoundStart) / RANKED_ROUND_SEC)
+		while lastRankedRoundIndex < idx do
+			endRankedRound()
+			lastRankedRoundIndex = lastRankedRoundIndex + 1
+		end
+		rankedTimerSync:FireAllClients(getRankedTimeRemainingSec())
+	end
+end)
 
 Bots.setup({
 	foodFolder = foodFolder,

@@ -21,6 +21,9 @@ local coinsUpdated = ReplicatedStorage:WaitForChild("CoinsUpdated") :: RemoteEve
 local purchaseChest = ReplicatedStorage:WaitForChild("PurchaseChest") :: RemoteFunction
 local survivalBonus = ReplicatedStorage:WaitForChild("SurvivalBonus") :: RemoteEvent
 local survivalStreakSync = ReplicatedStorage:WaitForChild("SurvivalStreakSync") :: RemoteEvent
+local roundEnd = ReplicatedStorage:WaitForChild("RoundEnd") :: RemoteEvent
+local voidBeastUnlocked = ReplicatedStorage:WaitForChild("VoidBeastUnlocked") :: RemoteEvent
+local rankedTimerSync = ReplicatedStorage:WaitForChild("RankedTimerSync") :: RemoteEvent
 
 local playerGui = player:WaitForChild("PlayerGui")
 
@@ -161,6 +164,26 @@ hpLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 hpLabel.TextStrokeTransparency = 0.5
 hpLabel.ZIndex = 2
 hpLabel.Parent = hpBack
+
+local rankedGui = Instance.new("ScreenGui")
+rankedGui.Name = "RankedHud"
+rankedGui.ResetOnSpawn = false
+rankedGui.DisplayOrder = 18
+rankedGui.IgnoreGuiInset = false
+rankedGui.Parent = playerGui
+
+local rankedTimerLabel = Instance.new("TextLabel")
+rankedTimerLabel.Name = "RankedCountdown"
+rankedTimerLabel.AnchorPoint = Vector2.new(0, 0)
+rankedTimerLabel.Position = UDim2.new(0, 12, 0, 10)
+rankedTimerLabel.Size = UDim2.fromOffset(200, 28)
+rankedTimerLabel.BackgroundTransparency = 1
+rankedTimerLabel.Font = Enum.Font.GothamBlack
+rankedTimerLabel.TextSize = 20
+rankedTimerLabel.TextColor3 = Color3.fromRGB(255, 210, 120)
+rankedTimerLabel.TextXAlignment = Enum.TextXAlignment.Left
+rankedTimerLabel.Text = "Ranked: 15:00"
+rankedTimerLabel.Parent = rankedGui
 
 local function updateHealthBar(humanoid: Humanoid)
 	local maxH = humanoid.MaxHealth
@@ -455,7 +478,7 @@ local function showSurvivalBonusPopup(message: string)
 
 	local tl = Instance.new("TextLabel")
 	tl.AnchorPoint = Vector2.new(0, 0)
-	tl.Position = UDim2.new(0, 12, 0, 12)
+	tl.Position = UDim2.new(0, 12, 0, 58)
 	tl.Size = UDim2.fromOffset(440, 48)
 	tl.BackgroundColor3 = Color3.fromRGB(18, 36, 26)
 	tl.BackgroundTransparency = 0.2
@@ -494,6 +517,181 @@ survivalBonus.OnClientEvent:Connect(function(msg: unknown)
 	if typeof(msg) == "string" then
 		showSurvivalBonusPopup(msg :: string)
 	end
+end)
+
+local function formatRankedCountdown(totalSec: number): string
+	local m = math.floor(totalSec / 60)
+	local s = totalSec % 60
+	return string.format("Ranked: %d:%02d", m, s)
+end
+
+rankedTimerSync.OnClientEvent:Connect(function(sec: unknown)
+	if typeof(sec) ~= "number" then
+		return
+	end
+	local n = math.max(0, math.floor(sec :: number))
+	rankedTimerLabel.Text = formatRankedCountdown(n)
+end)
+
+local function showRoundResultsPanel(rows: { any })
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "RoundEndPanel"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 245
+	gui.IgnoreGuiInset = true
+	gui.Parent = playerGui
+
+	local dim = Instance.new("Frame")
+	dim.Size = UDim2.fromScale(1, 1)
+	dim.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	dim.BackgroundTransparency = 0.35
+	dim.BorderSizePixel = 0
+	dim.Parent = gui
+
+	local panel = Instance.new("Frame")
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.Position = UDim2.new(0.5, 0, 0.5, 0)
+	panel.Size = UDim2.fromOffset(520, 360)
+	panel.BackgroundColor3 = Color3.fromRGB(24, 24, 32)
+	panel.BorderSizePixel = 0
+	panel.Parent = gui
+
+	local pc = Instance.new("UICorner")
+	pc.CornerRadius = UDim.new(0, 14)
+	pc.Parent = panel
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(1, 0, 0, 44)
+	title.Position = UDim2.new(0, 0, 0, 12)
+	title.BackgroundTransparency = 1
+	title.Font = Enum.Font.GothamBlack
+	title.TextSize = 26
+	title.TextColor3 = Color3.fromRGB(255, 220, 100)
+	title.Text = "RANKED ROUND — RESULTS"
+	title.Parent = panel
+
+	local y = 64
+	for _, row in ipairs(rows) do
+		if typeof(row) == "table" then
+			local t = row :: { [string]: any }
+			local place = t.place
+			local name = t.name
+			local score = t.score
+			local reward = t.reward
+			if typeof(place) == "number" and typeof(name) == "string" and typeof(score) == "number" and typeof(reward) == "string" then
+				local line = Instance.new("TextLabel")
+				line.Size = UDim2.new(1, -32, 0, 72)
+				line.Position = UDim2.new(0, 16, 0, y)
+				line.BackgroundColor3 = Color3.fromRGB(36, 36, 48)
+				line.BackgroundTransparency = 0.2
+				line.BorderSizePixel = 0
+				line.Font = Enum.Font.GothamBold
+				line.TextSize = 16
+				line.TextColor3 = Color3.fromRGB(240, 240, 248)
+				line.TextWrapped = true
+				line.TextXAlignment = Enum.TextXAlignment.Left
+				line.TextYAlignment = Enum.TextYAlignment.Top
+				line.Text = string.format(
+					"#%d  %s\nScore: %d   ·   %s",
+					place :: number,
+					name :: string,
+					score :: number,
+					reward :: string
+				)
+				local pad = Instance.new("UIPadding")
+				pad.PaddingLeft = UDim.new(0, 12)
+				pad.PaddingTop = UDim.new(0, 8)
+				pad.Parent = line
+				line.Parent = panel
+				local lc = Instance.new("UICorner")
+				lc.CornerRadius = UDim.new(0, 8)
+				lc.Parent = line
+				y = y + 80
+			end
+		end
+	end
+
+	local foot = Instance.new("TextLabel")
+	foot.Size = UDim2.new(1, -24, 0, 28)
+	foot.Position = UDim2.new(0, 12, 1, -40)
+	foot.BackgroundTransparency = 1
+	foot.Font = Enum.Font.GothamMedium
+	foot.TextSize = 14
+	foot.TextColor3 = Color3.fromRGB(180, 180, 190)
+	foot.Text = "Next round starts now — closing in 5 seconds"
+	foot.TextXAlignment = Enum.TextXAlignment.Center
+	foot.Parent = panel
+
+	task.delay(5, function()
+		if gui.Parent then
+			gui:Destroy()
+		end
+	end)
+end
+
+roundEnd.OnClientEvent:Connect(function(payload: unknown)
+	if typeof(payload) ~= "table" then
+		return
+	end
+	showRoundResultsPanel(payload :: { any })
+end)
+
+local function showVoidBeastUnlock()
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "VoidBeastFlash"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 260
+	gui.IgnoreGuiInset = true
+	gui.Parent = playerGui
+
+	local black = Instance.new("Frame")
+	black.Size = UDim2.fromScale(1, 1)
+	black.BackgroundColor3 = Color3.fromRGB(5, 0, 12)
+	black.BackgroundTransparency = 0.15
+	black.BorderSizePixel = 0
+	black.Parent = gui
+
+	local purple = Instance.new("Frame")
+	purple.Size = UDim2.fromScale(1, 1)
+	purple.BackgroundColor3 = Color3.fromRGB(120, 40, 200)
+	purple.BackgroundTransparency = 0.55
+	purple.BorderSizePixel = 0
+	purple.Parent = gui
+
+	local msg = Instance.new("TextLabel")
+	msg.AnchorPoint = Vector2.new(0.5, 0.5)
+	msg.Position = UDim2.new(0.5, 0, 0.5, 0)
+	msg.Size = UDim2.fromOffset(900, 120)
+	msg.BackgroundTransparency = 1
+	msg.Font = Enum.Font.GothamBlack
+	msg.TextSize = 36
+	msg.TextWrapped = true
+	msg.TextColor3 = Color3.fromRGB(220, 160, 255)
+	msg.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	msg.TextStrokeTransparency = 0.35
+	msg.Text = "THE VOID BEAST AWAKENS - Secret animal unlocked"
+	msg.Parent = gui
+
+	TweenService:Create(purple, TweenInfo.new(0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		BackgroundTransparency = 1,
+	}):Play()
+	TweenService:Create(black, TweenInfo.new(5, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+		BackgroundTransparency = 1,
+	}):Play()
+	TweenService:Create(msg, TweenInfo.new(5, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+		TextTransparency = 1,
+		TextStrokeTransparency = 1,
+	}):Play()
+
+	task.delay(5.1, function()
+		if gui.Parent then
+			gui:Destroy()
+		end
+	end)
+end
+
+voidBeastUnlocked.OnClientEvent:Connect(function()
+	showVoidBeastUnlock()
 end)
 
 -- --- Shop (chest purchases) ---

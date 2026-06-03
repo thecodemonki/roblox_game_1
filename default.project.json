@@ -54,6 +54,15 @@
       },
       "SurvivalStreakSync": {
         "$className": "RemoteEvent"
+      },
+      "RoundEnd": {
+        "$className": "RemoteEvent"
+      },
+      "VoidBeastUnlocked": {
+        "$className": "RemoteEvent"
+      },
+      "RankedTimerSync": {
+        "$className": "RemoteEvent"
       }
     },
 

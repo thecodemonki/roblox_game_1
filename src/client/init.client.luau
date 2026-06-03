@@ -15,6 +15,8 @@ local titleSync = ReplicatedStorage:WaitForChild("TitleSync") :: RemoteEvent
 local titleUnlocked = ReplicatedStorage:WaitForChild("TitleUnlocked") :: RemoteEvent
 local extinctionEvent = ReplicatedStorage:WaitForChild("ExtinctionEvent") :: RemoteEvent
 local lastPredator = ReplicatedStorage:WaitForChild("LastPredator") :: RemoteEvent
+local skinReceived = ReplicatedStorage:WaitForChild("SkinReceived") :: RemoteEvent
+local skinInventorySync = ReplicatedStorage:WaitForChild("SkinInventorySync") :: RemoteEvent
 
 local playerGui = player:WaitForChild("PlayerGui")
 
@@ -132,6 +134,234 @@ if player.Character then
 	task.defer(onLocalCharacterAdded, player.Character)
 end
 player.CharacterAdded:Connect(onLocalCharacterAdded)
+
+-- --- Skins: catalog + chest popup + inventory UI ---
+type SkinEntry = { name: string, rarity: string, level: number }
+local skinCatalog: { SkinEntry } = {}
+
+local function rarityColor(rarity: string): Color3
+	if rarity == "Common" then
+		return Color3.fromRGB(160, 160, 170)
+	elseif rarity == "Rare" then
+		return Color3.fromRGB(70, 140, 255)
+	elseif rarity == "Epic" then
+		return Color3.fromRGB(175, 85, 255)
+	elseif rarity == "Legendary" then
+		return Color3.fromRGB(255, 205, 90)
+	end
+	return Color3.fromRGB(180, 180, 190)
+end
+
+local skinScreenGui = Instance.new("ScreenGui")
+skinScreenGui.Name = "SkinUi"
+skinScreenGui.ResetOnSpawn = false
+skinScreenGui.DisplayOrder = 35
+skinScreenGui.IgnoreGuiInset = false
+skinScreenGui.Parent = playerGui
+
+local invOpen = false
+
+local invPanel = Instance.new("Frame")
+invPanel.Name = "SkinInventoryPanel"
+invPanel.AnchorPoint = Vector2.new(0, 1)
+invPanel.Position = UDim2.new(0, 12, 1, -54)
+invPanel.Size = UDim2.fromOffset(360, 300)
+invPanel.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
+invPanel.BackgroundTransparency = 0.12
+invPanel.BorderSizePixel = 0
+invPanel.Visible = false
+invPanel.Parent = skinScreenGui
+
+local invPanelCorner = Instance.new("UICorner")
+invPanelCorner.CornerRadius = UDim.new(0, 10)
+invPanelCorner.Parent = invPanel
+
+local invTitle = Instance.new("TextLabel")
+invTitle.Name = "Title"
+invTitle.Size = UDim2.new(1, -16, 0, 28)
+invTitle.Position = UDim2.new(0, 8, 0, 8)
+invTitle.BackgroundTransparency = 1
+invTitle.Font = Enum.Font.GothamBold
+invTitle.TextSize = 18
+invTitle.TextColor3 = Color3.fromRGB(240, 240, 245)
+invTitle.TextXAlignment = Enum.TextXAlignment.Left
+invTitle.Text = "Your skins"
+invTitle.Parent = invPanel
+
+local invScroll = Instance.new("ScrollingFrame")
+invScroll.Name = "Scroll"
+invScroll.Size = UDim2.new(1, -16, 1, -44)
+invScroll.Position = UDim2.new(0, 8, 0, 36)
+invScroll.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+invScroll.BackgroundTransparency = 0.35
+invScroll.BorderSizePixel = 0
+invScroll.ScrollBarThickness = 6
+invScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+invScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+invScroll.Parent = invPanel
+
+local invScrollCorner = Instance.new("UICorner")
+invScrollCorner.CornerRadius = UDim.new(0, 8)
+invScrollCorner.Parent = invScroll
+
+local invList = Instance.new("UIListLayout")
+invList.Padding = UDim.new(0, 6)
+invList.SortOrder = Enum.SortOrder.LayoutOrder
+invList.Parent = invScroll
+
+local invButton = Instance.new("TextButton")
+invButton.Name = "SkinInventoryButton"
+invButton.AnchorPoint = Vector2.new(0, 1)
+invButton.Position = UDim2.new(0, 12, 1, -12)
+invButton.Size = UDim2.fromOffset(120, 36)
+invButton.BackgroundColor3 = Color3.fromRGB(40, 42, 55)
+invButton.TextColor3 = Color3.fromRGB(230, 230, 240)
+invButton.Font = Enum.Font.GothamBold
+invButton.TextSize = 16
+invButton.Text = "Skins"
+invButton.AutoButtonColor = true
+invButton.Parent = skinScreenGui
+
+local invBtnCorner = Instance.new("UICorner")
+invBtnCorner.CornerRadius = UDim.new(0, 8)
+invBtnCorner.Parent = invButton
+
+local function clearSkinCells()
+	for _, child in invScroll:GetChildren() do
+		if child:IsA("Frame") and child.Name == "SkinCell" then
+			child:Destroy()
+		end
+	end
+end
+
+local function rebuildSkinGrid()
+	clearSkinCells()
+	for _, row in skinCatalog do
+		local cell = Instance.new("Frame")
+		cell.Name = "SkinCell"
+		cell.Size = UDim2.new(1, -8, 0, 44)
+		cell.BackgroundColor3 = Color3.fromRGB(32, 32, 40)
+		cell.BorderSizePixel = 0
+		cell.Parent = invScroll
+
+		local cc = Instance.new("UICorner")
+		cc.CornerRadius = UDim.new(0, 6)
+		cc.Parent = cell
+
+		local nameLbl = Instance.new("TextLabel")
+		nameLbl.Size = UDim2.new(1, -12, 0, 22)
+		nameLbl.Position = UDim2.new(0, 8, 0, 4)
+		nameLbl.BackgroundTransparency = 1
+		nameLbl.Font = Enum.Font.GothamBold
+		nameLbl.TextSize = 14
+		nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+		nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+		nameLbl.TextColor3 = rarityColor(row.rarity)
+		nameLbl.Text = row.name
+		nameLbl.Parent = cell
+
+		local metaLbl = Instance.new("TextLabel")
+		metaLbl.Size = UDim2.new(1, -12, 0, 18)
+		metaLbl.Position = UDim2.new(0, 8, 0, 24)
+		metaLbl.BackgroundTransparency = 1
+		metaLbl.Font = Enum.Font.GothamMedium
+		metaLbl.TextSize = 12
+		metaLbl.TextXAlignment = Enum.TextXAlignment.Left
+		metaLbl.TextColor3 = Color3.fromRGB(180, 180, 190)
+		metaLbl.Text = string.format("%s  ·  Lv. %d", row.rarity, row.level)
+		metaLbl.Parent = cell
+	end
+end
+
+invButton.MouseButton1Click:Connect(function()
+	invOpen = not invOpen
+	invPanel.Visible = invOpen
+end)
+
+local function showSkinChestPopup(skinName: string, rarity: string, level: number, kind: string)
+	local col = rarityColor(rarity)
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "SkinChestPopup"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 220
+	gui.IgnoreGuiInset = true
+	gui.Parent = playerGui
+
+	local holder = Instance.new("Frame")
+	holder.AnchorPoint = Vector2.new(0.5, 0.5)
+	holder.Position = UDim2.new(0.5, 0, 0.5, 0)
+	holder.Size = UDim2.fromOffset(520, 140)
+	holder.BackgroundTransparency = 1
+	holder.Parent = gui
+
+	local main = Instance.new("TextLabel")
+	main.Size = UDim2.fromScale(1, 1)
+	main.BackgroundTransparency = 1
+	main.Font = Enum.Font.GothamBlack
+	main.TextSize = 26
+	main.TextWrapped = true
+	main.TextColor3 = col
+	main.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	main.TextStrokeTransparency = 0.45
+	main.TextXAlignment = Enum.TextXAlignment.Center
+	main.TextYAlignment = Enum.TextYAlignment.Center
+
+	if kind == "level_up" then
+		main.Text = string.format("Skin Leveled Up!\n%s → Level %d", skinName, level)
+	elseif kind == "duplicate_max" then
+		main.Text = string.format("Already max level\n%s (Level %d)", skinName, level)
+	else
+		main.Text = string.format("%s\n%s", skinName, rarity)
+	end
+	main.Parent = holder
+
+	local tween = TweenService:Create(
+		main,
+		TweenInfo.new(3, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+		{ TextTransparency = 1, TextStrokeTransparency = 1 }
+	)
+	tween.Completed:Connect(function()
+		if gui.Parent then
+			gui:Destroy()
+		end
+	end)
+	tween:Play()
+end
+
+skinReceived.OnClientEvent:Connect(function(skinName: unknown, rarity: unknown, level: unknown, kind: unknown)
+	if typeof(skinName) ~= "string" or typeof(rarity) ~= "string" or typeof(level) ~= "number" then
+		return
+	end
+	local k = if typeof(kind) == "string" then kind :: string else "new"
+	showSkinChestPopup(skinName :: string, rarity :: string, level :: number, k)
+end)
+
+skinInventorySync.OnClientEvent:Connect(function(payload: unknown)
+	if typeof(payload) ~= "table" then
+		return
+	end
+	local nextCat: { SkinEntry } = {}
+	for _, row in ipairs(payload :: { any }) do
+		if typeof(row) == "table" then
+			local t = row :: { [string]: any }
+			local n = t.name
+			local r = t.rarity
+			local lv = t.level
+			if typeof(n) == "string" and typeof(r) == "string" and typeof(lv) == "number" then
+				table.insert(nextCat, {
+					name = n :: string,
+					rarity = r :: string,
+					level = lv :: number,
+				})
+			end
+		end
+	end
+	table.sort(nextCat, function(a, b)
+		return a.name < b.name
+	end)
+	skinCatalog = nextCat
+	rebuildSkinGrid()
+end)
 
 pointsUpdate.OnClientEvent:Connect(function(points: number, level: number?)
 	local lv = if level ~= nil then level else 1

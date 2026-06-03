@@ -36,6 +36,12 @@
       },
       "LastPredator": {
         "$className": "RemoteEvent"
+      },
+      "SkinReceived": {
+        "$className": "RemoteEvent"
+      },
+      "SkinInventorySync": {
+        "$className": "RemoteEvent"
       }
     },
 

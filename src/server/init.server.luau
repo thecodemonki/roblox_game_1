@@ -18,6 +18,8 @@ local titleSync = ReplicatedStorage:WaitForChild("TitleSync") :: RemoteEvent
 local titleUnlocked = ReplicatedStorage:WaitForChild("TitleUnlocked") :: RemoteEvent
 local extinctionEvent = ReplicatedStorage:WaitForChild("ExtinctionEvent") :: RemoteEvent
 local lastPredator = ReplicatedStorage:WaitForChild("LastPredator") :: RemoteEvent
+local skinReceived = ReplicatedStorage:WaitForChild("SkinReceived") :: RemoteEvent
+local skinInventorySync = ReplicatedStorage:WaitForChild("SkinInventorySync") :: RemoteEvent
 
 local Bots = require(script:WaitForChild("Bots"))
 
@@ -73,6 +75,11 @@ local POINTS_PER_FOOD = 1    -- points per pellet eaten
 local POINTS_PER_KILL = 15
 local BOT_MELEE_COOLDOWN = 1.5
 local RESPAWN_DELAY = 3      -- seconds before pellet respawns
+local CHEST_COUNT = 5
+local CHEST_OPEN_RANGE = 5
+local CHEST_RESPAWN_SEC = 60
+local CHEST_SIZE = 3
+local SKIN_MAX_LEVEL = 5
 
 local ATTACK_RANGE = 8
 local ATTACK_HALF_ARC_DEG = 90 -- 180° total in front
@@ -105,6 +112,33 @@ local playerKills: { [Player]: number } = {}
 local playerLastAttack: { [Player]: number } = {}
 local playerTitle: { [Player]: string } = {}
 local lastBotMeleeTime: { [Model]: number } = {}
+-- Skins: per player map skinName -> { level, rarity }
+local playerSkins: { [Player]: { [string]: { level: number, rarity: string } } } = {}
+
+local SKINS_COMMON = {
+	"Golden Chicken",
+	"Brown Rat",
+	"Blue Pigeon",
+	"White Fox",
+}
+local SKINS_RARE = {
+	"Arctic Wolf",
+	"Shadow Rat",
+	"Neon Pigeon",
+	"Crystal Fox",
+}
+local SKINS_EPIC = {
+	"Ghost Wolf",
+	"Flame Fox",
+	"Storm Hawk",
+	"Void Rat",
+}
+local SKINS_LEGENDARY = {
+	"Void Rex",
+	"Shadow Dragon",
+	"Inferno Phoenix",
+	"Skeleton Rex",
+}
 
 local function addPickShield(player: Player)
 	local character = player.Character
@@ -217,6 +251,150 @@ end
 -- Spawn all food on start
 for i = 1, FOOD_COUNT do
 	spawnFood()
+end
+
+-- Chests (glowing gold) + skin drops
+local chestFolder = Instance.new("Folder")
+chestFolder.Name = "Chests"
+chestFolder.Parent = workspace
+
+local chestSlots: { BasePart? } = {}
+
+local function randomChestPosition(): Vector3
+	return Vector3.new(
+		math.random(-MAP_SIZE, MAP_SIZE),
+		CHEST_SIZE / 2 + 2,
+		math.random(-MAP_SIZE, MAP_SIZE)
+	)
+end
+
+local function buildChestPart(): BasePart
+	local p = Instance.new("Part")
+	p.Name = "TreasureChest"
+	p.Size = Vector3.new(CHEST_SIZE, CHEST_SIZE, CHEST_SIZE)
+	p.Anchored = true
+	p.CanCollide = false
+	p.Material = Enum.Material.Neon
+	p.Color = Color3.fromRGB(255, 210, 55)
+	p:SetAttribute("Available", true)
+	local light = Instance.new("PointLight")
+	light.Name = "ChestGlow"
+	light.Color = p.Color
+	light.Brightness = 1.8
+	light.Range = 24
+	light.Parent = p
+	return p
+end
+
+local function spawnChestAtSlot(slotIndex: number)
+	local old = chestSlots[slotIndex]
+	if old and old.Parent then
+		old:Destroy()
+	end
+	local p = buildChestPart()
+	p.Position = randomChestPosition()
+	p.Parent = chestFolder
+	chestSlots[slotIndex] = p
+end
+
+for slot = 1, CHEST_COUNT do
+	spawnChestAtSlot(slot)
+end
+
+local function rollRandomSkin(): (string, string)
+	local r = math.random(1, 100)
+	local rarity: string
+	local pool: { string }
+	if r <= 60 then
+		rarity = "Common"
+		pool = SKINS_COMMON
+	elseif r <= 85 then
+		rarity = "Rare"
+		pool = SKINS_RARE
+	elseif r <= 97 then
+		rarity = "Epic"
+		pool = SKINS_EPIC
+	else
+		rarity = "Legendary"
+		pool = SKINS_LEGENDARY
+	end
+	return pool[math.random(1, #pool)], rarity
+end
+
+local function getSkinListSerializable(player: Player): { { name: string, rarity: string, level: number } }
+	local inv = playerSkins[player]
+	local out: { { name: string, rarity: string, level: number } } = {}
+	if not inv then
+		return out
+	end
+	for skinName, entry in pairs(inv) do
+		table.insert(out, {
+			name = skinName,
+			rarity = entry.rarity,
+			level = entry.level,
+		})
+	end
+	table.sort(out, function(a, b)
+		return a.name < b.name
+	end)
+	return out
+end
+
+local function syncSkinInventory(player: Player)
+	if playerSkins[player] ~= nil then
+		skinInventorySync:FireClient(player, getSkinListSerializable(player))
+	end
+end
+
+-- kind: "new" | "level_up" | "duplicate_max"
+local function grantRandomSkinFromChest(player: Player)
+	local inv = playerSkins[player]
+	if not inv then
+		return
+	end
+	local skinName, rolledRarity = rollRandomSkin()
+	local existing = inv[skinName]
+	local rarity: string
+	local level: number
+	local kind: string
+	if existing then
+		rarity = existing.rarity
+		if existing.level < SKIN_MAX_LEVEL then
+			existing.level = existing.level + 1
+			level = existing.level
+			kind = "level_up"
+		else
+			level = existing.level
+			kind = "duplicate_max"
+		end
+	else
+		inv[skinName] = { level = 1, rarity = rolledRarity }
+		rarity = rolledRarity
+		level = 1
+		kind = "new"
+	end
+	skinReceived:FireClient(player, skinName, rarity, level, kind)
+	syncSkinInventory(player)
+end
+
+local function tryOpenNearbyChest(player: Player, rootPos: Vector3)
+	for slot = 1, CHEST_COUNT do
+		local ch = chestSlots[slot]
+		if ch and ch.Parent and ch:GetAttribute("Available") == true then
+			if (ch.Position - rootPos).Magnitude <= CHEST_OPEN_RANGE then
+				ch:SetAttribute("Available", false)
+				ch:Destroy()
+				chestSlots[slot] = nil
+				grantRandomSkinFromChest(player)
+				task.delay(CHEST_RESPAWN_SEC, function()
+					if chestFolder.Parent then
+						spawnChestAtSlot(slot)
+					end
+				end)
+				return
+			end
+		end
+	end
 end
 
 local function handlePlayerDeath(player: Player, character: Model)
@@ -523,9 +701,11 @@ local function onPlayerAdded(player)
 	playerKills[player] = 0
 	playerLastAttack[player] = 0
 	playerTitle[player] = titleFromKills(0)
+	playerSkins[player] = {}
 	print(player.Name .. " joined. Points: 0")
 	pointsUpdate:FireClient(player, 0, 1)
 	titleSync:FireClient(player, playerTitle[player] :: string)
+	syncSkinInventory(player)
 
 	-- When character spawns
 	player.CharacterAdded:Connect(function(character)
@@ -565,6 +745,8 @@ local function onPlayerAdded(player)
 					end
 				end
 			end
+
+			tryOpenNearbyChest(player, rootPart.Position)
 		end)
 	end)
 end
@@ -578,6 +760,7 @@ local function onPlayerRemoving(player)
 	playerKills[player] = nil
 	playerLastAttack[player] = nil
 	playerTitle[player] = nil
+	playerSkins[player] = nil
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)

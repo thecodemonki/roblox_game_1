@@ -7,6 +7,7 @@ local player = Players.LocalPlayer
 local pointsUpdate = ReplicatedStorage:WaitForChild("PointsUpdate") :: RemoteEvent
 local levelUpRemote = ReplicatedStorage:WaitForChild("LevelUp") :: RemoteEvent
 local animalPicked = ReplicatedStorage:WaitForChild("AnimalPicked") :: RemoteEvent
+local playerDied = ReplicatedStorage:WaitForChild("PlayerDied") :: RemoteEvent
 
 local playerGui = player:WaitForChild("PlayerGui")
 
@@ -285,4 +286,46 @@ levelUpRemote.OnClientEvent:Connect(function(newLevel: number, choices: unknown?
 	else
 		showLegacyLevelToast(newLevel)
 	end
+end)
+
+playerDied.OnClientEvent:Connect(function(_newLevel: number)
+	local evo = playerGui:FindFirstChild("EvolutionPick")
+	if evo then
+		evo:Destroy()
+	end
+	clearPickBlur()
+
+	local deathGui = Instance.new("ScreenGui")
+	deathGui.Name = "DeathScreen"
+	deathGui.ResetOnSpawn = false
+	deathGui.DisplayOrder = 250
+	deathGui.IgnoreGuiInset = true
+	deathGui.Parent = playerGui
+
+	local msg = Instance.new("TextLabel")
+	msg.Name = "DeathMessage"
+	msg.AnchorPoint = Vector2.new(0.5, 0.5)
+	msg.Position = UDim2.new(0.5, 0, 0.5, 0)
+	msg.Size = UDim2.fromOffset(900, 100)
+	msg.BackgroundTransparency = 1
+	msg.Font = Enum.Font.GothamBlack
+	msg.TextSize = 48
+	msg.TextColor3 = Color3.fromRGB(220, 40, 40)
+	msg.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	msg.TextStrokeTransparency = 0.4
+	msg.TextTransparency = 0
+	msg.Text = "YOU DIED - Lost 2 Levels"
+	msg.Parent = deathGui
+
+	local tween = TweenService:Create(
+		msg,
+		TweenInfo.new(3, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+		{ TextTransparency = 1, TextStrokeTransparency = 1 }
+	)
+	tween.Completed:Connect(function()
+		if deathGui.Parent then
+			deathGui:Destroy()
+		end
+	end)
+	tween:Play()
 end)

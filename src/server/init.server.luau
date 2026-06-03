@@ -11,6 +11,7 @@ local AnimalPools = require(Shared:WaitForChild("AnimalPools"))
 local pointsUpdate = ReplicatedStorage:WaitForChild("PointsUpdate") :: RemoteEvent
 local levelUp = ReplicatedStorage:WaitForChild("LevelUp") :: RemoteEvent
 local animalPicked = ReplicatedStorage:WaitForChild("AnimalPicked") :: RemoteEvent
+local playerDied = ReplicatedStorage:WaitForChild("PlayerDied") :: RemoteEvent
 
 local EVOLUTION_FF_NAME = "EvolutionPickShield"
 
@@ -42,6 +43,21 @@ local function getLevelFromPoints(points: number): number
 	end
 	return LEVEL_ANCHORS[#LEVEL_ANCHORS].level
 end
+
+-- Smallest point total that yields `targetLevel` under getLevelFromPoints.
+local function getMinPointsForLevel(targetLevel: number): number
+	if targetLevel <= 1 then
+		return 0
+	end
+	for p = 0, 800 do
+		if getLevelFromPoints(p) == targetLevel then
+			return p
+		end
+	end
+	return 0
+end
+
+-- Kill titles: intentionally not stored here yet; nothing to reset on death.
 
 -- Config
 local FOOD_COUNT = 50        -- how many pellets on map at once
@@ -124,6 +140,25 @@ for i = 1, FOOD_COUNT do
 	spawnFood()
 end
 
+local function handlePlayerDeath(player: Player, character: Model)
+	if playerPoints[player] == nil then
+		return
+	end
+
+	local currentLevel = getLevelFromPoints(playerPoints[player])
+	local newLevel = math.max(1, currentLevel - 2)
+	local newPoints = getMinPointsForLevel(newLevel)
+
+	pendingEvolution[player] = nil
+	removePickShield(character)
+
+	playerPoints[player] = newPoints
+	playerLevel[player] = newLevel
+
+	pointsUpdate:FireClient(player, newPoints, newLevel)
+	playerDied:FireClient(player, newLevel)
+end
+
 local function syncPointsAndLevel(player: Player)
 	local points = playerPoints[player]
 	if points == nil then
@@ -171,6 +206,10 @@ local function onPlayerAdded(player)
 		end
 
 		local humanoid = character:WaitForChild("Humanoid")
+		humanoid.Died:Connect(function()
+			handlePlayerDeath(player, character)
+		end)
+
 		local rootPart = character:WaitForChild("HumanoidRootPart")
 
 		-- Check for food collision every frame

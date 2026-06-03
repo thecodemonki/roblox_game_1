@@ -15,6 +15,9 @@
       },
       "AnimalPicked": {
         "$className": "RemoteEvent"
+      },
+      "PlayerDied": {
+        "$className": "RemoteEvent"
       }
     },
 

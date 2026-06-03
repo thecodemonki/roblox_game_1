@@ -1,5 +1,5 @@
 -- Evolve Game Server
--- Phase 1: Food spawning + points system
+-- Phase 1: Food spawning + points system + basic combat
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -12,7 +12,8 @@ local pointsUpdate = ReplicatedStorage:WaitForChild("PointsUpdate") :: RemoteEve
 local levelUp = ReplicatedStorage:WaitForChild("LevelUp") :: RemoteEvent
 local animalPicked = ReplicatedStorage:WaitForChild("AnimalPicked") :: RemoteEvent
 local playerDied = ReplicatedStorage:WaitForChild("PlayerDied") :: RemoteEvent
-local playerEaten = ReplicatedStorage:WaitForChild("PlayerEaten") :: RemoteEvent
+local attackRequest = ReplicatedStorage:WaitForChild("AttackRequest") :: RemoteEvent
+local playerKilled = ReplicatedStorage:WaitForChild("PlayerKilled") :: RemoteEvent
 
 local EVOLUTION_FF_NAME = "EvolutionPickShield"
 
@@ -63,9 +64,17 @@ local FOOD_COUNT = 50        -- how many pellets on map at once
 local FOOD_SIZE = 2          -- size of each pellet
 local MAP_SIZE = 200         -- how big the map is
 local POINTS_PER_FOOD = 1    -- points per pellet eaten
-local POINTS_PER_PLAYER_EAT = 15
-local PLAYER_EAT_RANGE = 6   -- studs between roots to consume
+local POINTS_PER_KILL = 15
 local RESPAWN_DELAY = 3      -- seconds before pellet respawns
+
+local ATTACK_RANGE = 8
+local ATTACK_HALF_ARC_DEG = 90 -- 180° total in front
+
+local TIER_COMBAT: { [number]: { damage: number, cooldown: number } } = {
+	[1] = { damage = 10, cooldown = 1.0 },
+	[2] = { damage = 18, cooldown = 0.9 },
+	[3] = { damage = 28, cooldown = 0.8 },
+}
 
 -- Storage
 local playerPoints = {}
@@ -74,6 +83,7 @@ local pendingEvolution: { [Player]: { choices: { { name: string, ability: string
 local playerAnimal: { [Player]: string } = {}
 -- Kill title progress: persists through death (handlePlayerDeath does not reset this).
 local playerKills: { [Player]: number } = {}
+local playerLastAttack: { [Player]: number } = {}
 
 local function addPickShield(player: Player)
 	local character = player.Character
@@ -110,6 +120,51 @@ local function applyPacifistGlow(character: Model)
 	task.delay(3, function()
 		if h.Parent then
 			h:Destroy()
+		end
+	end)
+end
+
+local function flashCombatHit(character: Model)
+	local existing = character:FindFirstChild("CombatHitFlash")
+	if existing then
+		existing:Destroy()
+	end
+	local h = Instance.new("Highlight")
+	h.Name = "CombatHitFlash"
+	h.FillColor = Color3.fromRGB(255, 40, 40)
+	h.OutlineColor = Color3.fromRGB(180, 0, 0)
+	h.FillTransparency = 0.35
+	h.OutlineTransparency = 0.2
+	h.Parent = character
+	task.delay(0.15, function()
+		if h.Parent then
+			h:Destroy()
+		end
+	end)
+end
+
+local function showFloatingDamage(root: BasePart, amount: number)
+	local bb = Instance.new("BillboardGui")
+	bb.Name = "DamageNumber"
+	bb.Size = UDim2.fromOffset(80, 40)
+	bb.StudsOffset = Vector3.new(0, 2.8, 0)
+	bb.AlwaysOnTop = true
+	bb.LightInfluence = 0
+	bb.Parent = root
+
+	local tl = Instance.new("TextLabel")
+	tl.Size = UDim2.fromScale(1, 1)
+	tl.BackgroundTransparency = 1
+	tl.Text = "-" .. tostring(math.floor(amount))
+	tl.TextColor3 = Color3.fromRGB(255, 230, 120)
+	tl.TextStrokeTransparency = 0.3
+	tl.Font = Enum.Font.GothamBlack
+	tl.TextSize = 28
+	tl.Parent = bb
+
+	task.delay(1.1, function()
+		if bb.Parent then
+			bb:Destroy()
 		end
 	end)
 end
@@ -193,75 +248,105 @@ local function addPoints(player, amount)
 	end
 end
 
-local function performEat(eater: Player, victim: Player)
-	local charV = victim.Character
-	if not charV then
+local function getCombatStatsForPlayer(player: Player): (number, number)
+	local level = getLevelFromPoints(playerPoints[player] or 0)
+	local tier = AnimalPools.getTierForLevel(level)
+	local row = TIER_COMBAT[tier] or TIER_COMBAT[3]
+	return row.damage, row.cooldown
+end
+
+local function flatUnit(v: Vector3): Vector3?
+	local f = Vector3.new(v.X, 0, v.Z)
+	if f.Magnitude < 1e-3 then
+		return nil
+	end
+	return f.Unit
+end
+
+local function isTargetInMeleeCone(attackerRoot: BasePart, targetPosition: Vector3): boolean
+	local delta = targetPosition - attackerRoot.Position
+	local dist = delta.Magnitude
+	if dist > ATTACK_RANGE then
+		return false
+	end
+	local forward = flatUnit(attackerRoot.CFrame.LookVector)
+	if not forward then
+		return false
+	end
+	local toTarget = flatUnit(delta)
+	if not toTarget then
+		return true
+	end
+	local dot = math.clamp(forward:Dot(toTarget), -1, 1)
+	local ang = math.deg(math.acos(dot))
+	return ang <= ATTACK_HALF_ARC_DEG
+end
+
+local function onPlayerKill(attacker: Player, victim: Player)
+	playerKills[attacker] = (playerKills[attacker] or 0) + 1
+	addPoints(attacker, POINTS_PER_KILL)
+	playerKilled:FireClient(attacker, "killer", victim.Name, POINTS_PER_KILL)
+	playerKilled:FireClient(victim, "victim", attacker.Name)
+end
+
+local function tryMeleeAttack(attacker: Player)
+	if playerPoints[attacker] == nil then
 		return
 	end
-	local humV = charV:FindFirstChildOfClass("Humanoid")
-	if not humV or humV.Health <= 0 then
+
+	local charA = attacker.Character
+	if not charA then
+		return
+	end
+	local humA = charA:FindFirstChildOfClass("Humanoid")
+	local rootA = charA:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not humA or not rootA or humA.Health <= 0 then
 		return
 	end
 
 	local now = workspace:GetServerTimeNow()
-	local pac = eater:GetAttribute("PacifistUntil")
+	local pac = attacker:GetAttribute("PacifistUntil")
 	if typeof(pac) == "number" and now < pac then
 		return
 	end
 
-	playerKills[eater] = (playerKills[eater] or 0) + 1
-	addPoints(eater, POINTS_PER_PLAYER_EAT)
-	playerEaten:FireClient(eater, "eater", victim.Name, POINTS_PER_PLAYER_EAT)
-	playerEaten:FireClient(victim, "eaten", eater.Name)
-	humV.Health = 0
-end
+	local damage, cooldown = getCombatStatsForPlayer(attacker)
+	local last = playerLastAttack[attacker] or 0
+	if tick() - last < cooldown then
+		return
+	end
+	playerLastAttack[attacker] = tick()
 
-local function tryConsumeOnePlayerPair()
-	local list = Players:GetPlayers()
-	for i = 1, #list do
-		local pa = list[i]
-		if playerPoints[pa] == nil then
+	for _, other in Players:GetPlayers() do
+		if other == attacker then
 			continue
 		end
-		local charA = pa.Character
-		if not charA then
+		if playerPoints[other] == nil then
 			continue
 		end
-		local humA = charA:FindFirstChildOfClass("Humanoid")
-		local rootA = charA:FindFirstChild("HumanoidRootPart")
-		if not humA or not rootA or not rootA:IsA("BasePart") or humA.Health <= 0 then
+		local charB = other.Character
+		if not charB then
+			continue
+		end
+		local humB = charB:FindFirstChildOfClass("Humanoid")
+		local rootB = charB:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if not humB or not rootB or humB.Health <= 0 then
 			continue
 		end
 
-		for j = i + 1, #list do
-			local pb = list[j]
-			if playerPoints[pb] == nil then
-				continue
-			end
-			local charB = pb.Character
-			if not charB then
-				continue
-			end
-			local humB = charB:FindFirstChildOfClass("Humanoid")
-			local rootB = charB:FindFirstChild("HumanoidRootPart")
-			if not humB or not rootB or not rootB:IsA("BasePart") or humB.Health <= 0 then
-				continue
-			end
+		if not isTargetInMeleeCone(rootA, rootB.Position) then
+			continue
+		end
 
-			local dist = (rootA :: BasePart).Position - (rootB :: BasePart).Position
-			if dist.Magnitude >= PLAYER_EAT_RANGE then
-				continue
-			end
+		local newHealth = humB.Health - damage
+		flashCombatHit(charB)
+		showFloatingDamage(rootB, damage)
 
-			local levelA = getLevelFromPoints(playerPoints[pa])
-			local levelB = getLevelFromPoints(playerPoints[pb])
-			if levelA > levelB then
-				performEat(pa, pb)
-				return
-			elseif levelB > levelA then
-				performEat(pb, pa)
-				return
-			end
+		if newHealth <= 0 then
+			onPlayerKill(attacker, other)
+			humB.Health = 0
+		else
+			humB.Health = newHealth
 		end
 	end
 end
@@ -271,6 +356,7 @@ local function onPlayerAdded(player)
 	playerPoints[player] = 0
 	playerLevel[player] = 1
 	playerKills[player] = 0
+	playerLastAttack[player] = 0
 	print(player.Name .. " joined. Points: 0")
 	pointsUpdate:FireClient(player, 0, 1)
 
@@ -282,7 +368,11 @@ local function onPlayerAdded(player)
 			end)
 		end
 
-		local humanoid = character:WaitForChild("Humanoid")
+		local humanoid = character:WaitForChild("Humanoid") :: Humanoid
+		humanoid.MaxHealth = 100
+		humanoid.Health = 100
+		humanoid.FallDamageEnabled = false
+
 		humanoid.Died:Connect(function()
 			handlePlayerDeath(player, character)
 		end)
@@ -319,13 +409,14 @@ local function onPlayerRemoving(player)
 	pendingEvolution[player] = nil
 	playerAnimal[player] = nil
 	playerKills[player] = nil
+	playerLastAttack[player] = nil
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
 Players.PlayerRemoving:Connect(onPlayerRemoving)
 
-RunService.Heartbeat:Connect(function()
-	tryConsumeOnePlayerPair()
+attackRequest.OnServerEvent:Connect(function(player: Player)
+	tryMeleeAttack(player)
 end)
 
 animalPicked.OnServerEvent:Connect(function(player: Player, animalName: unknown)

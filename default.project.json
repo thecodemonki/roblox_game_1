@@ -19,7 +19,10 @@
       "PlayerDied": {
         "$className": "RemoteEvent"
       },
-      "PlayerEaten": {
+      "AttackRequest": {
+        "$className": "RemoteEvent"
+      },
+      "PlayerKilled": {
         "$className": "RemoteEvent"
       }
     },

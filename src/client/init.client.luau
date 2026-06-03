@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
@@ -8,7 +9,8 @@ local pointsUpdate = ReplicatedStorage:WaitForChild("PointsUpdate") :: RemoteEve
 local levelUpRemote = ReplicatedStorage:WaitForChild("LevelUp") :: RemoteEvent
 local animalPicked = ReplicatedStorage:WaitForChild("AnimalPicked") :: RemoteEvent
 local playerDied = ReplicatedStorage:WaitForChild("PlayerDied") :: RemoteEvent
-local playerEaten = ReplicatedStorage:WaitForChild("PlayerEaten") :: RemoteEvent
+local attackRequest = ReplicatedStorage:WaitForChild("AttackRequest") :: RemoteEvent
+local playerKilled = ReplicatedStorage:WaitForChild("PlayerKilled") :: RemoteEvent
 
 local playerGui = player:WaitForChild("PlayerGui")
 
@@ -42,6 +44,77 @@ local padding = Instance.new("UIPadding")
 padding.PaddingRight = UDim.new(0, 10)
 padding.PaddingLeft = UDim.new(0, 10)
 padding.Parent = label
+
+-- Health bar (Humanoid health replicates locally)
+local healthGui = Instance.new("ScreenGui")
+healthGui.Name = "HealthHud"
+healthGui.ResetOnSpawn = false
+healthGui.DisplayOrder = 15
+healthGui.Parent = playerGui
+
+local hpBack = Instance.new("Frame")
+hpBack.Name = "HpBack"
+hpBack.AnchorPoint = Vector2.new(0.5, 1)
+hpBack.Position = UDim2.new(0.5, 0, 1, -28)
+hpBack.Size = UDim2.fromOffset(260, 24)
+hpBack.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
+hpBack.BackgroundTransparency = 0.2
+hpBack.BorderSizePixel = 0
+hpBack.Parent = healthGui
+
+local hpBackCorner = Instance.new("UICorner")
+hpBackCorner.CornerRadius = UDim.new(0, 8)
+hpBackCorner.Parent = hpBack
+
+local hpFill = Instance.new("Frame")
+hpFill.Name = "HpFill"
+hpFill.Size = UDim2.fromScale(1, 1)
+hpFill.BackgroundColor3 = Color3.fromRGB(70, 210, 120)
+hpFill.BorderSizePixel = 0
+hpFill.Parent = hpBack
+
+local hpFillCorner = Instance.new("UICorner")
+hpFillCorner.CornerRadius = UDim.new(0, 8)
+hpFillCorner.Parent = hpFill
+
+local hpLabel = Instance.new("TextLabel")
+hpLabel.Name = "HpText"
+hpLabel.Size = UDim2.fromScale(1, 1)
+hpLabel.BackgroundTransparency = 1
+hpLabel.Font = Enum.Font.GothamBold
+hpLabel.TextSize = 14
+hpLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+hpLabel.TextStrokeTransparency = 0.5
+hpLabel.ZIndex = 2
+hpLabel.Parent = hpBack
+
+local function updateHealthBar(humanoid: Humanoid)
+	local maxH = humanoid.MaxHealth
+	local h = humanoid.Health
+	local pct = if maxH > 0 then math.clamp(h / maxH, 0, 1) else 0
+	hpFill.Size = UDim2.new(pct, 0, 1, 0)
+	hpLabel.Text = string.format("%d / %d", math.floor(h + 0.5), math.floor(maxH + 0.5))
+end
+
+local function bindHumanoidHealth(humanoid: Humanoid)
+	updateHealthBar(humanoid)
+	humanoid.HealthChanged:Connect(function()
+		updateHealthBar(humanoid)
+	end)
+	humanoid:GetPropertyChangedSignal("MaxHealth"):Connect(function()
+		updateHealthBar(humanoid)
+	end)
+end
+
+local function onLocalCharacterAdded(character: Model)
+	local hum = character:WaitForChild("Humanoid") :: Humanoid
+	bindHumanoidHealth(hum)
+end
+
+if player.Character then
+	task.defer(onLocalCharacterAdded, player.Character)
+end
+player.CharacterAdded:Connect(onLocalCharacterAdded)
 
 pointsUpdate.OnClientEvent:Connect(function(points: number, level: number?)
 	local lv = if level ~= nil then level else 1
@@ -278,16 +351,16 @@ local function showEvolutionPick(newLevel: number, choices: { AnimalChoice })
 	end
 end
 
-local function showEatMessage(text: string, textColor: Color3, duration: number)
+local function showTimedCombatMessage(text: string, textColor: Color3, duration: number)
 	local gui = Instance.new("ScreenGui")
-	gui.Name = "EatMessage"
+	gui.Name = "CombatMessage"
 	gui.ResetOnSpawn = false
 	gui.DisplayOrder = 220
 	gui.IgnoreGuiInset = true
 	gui.Parent = playerGui
 
 	local msg = Instance.new("TextLabel")
-	msg.Name = "EatText"
+	msg.Name = "CombatText"
 	msg.AnchorPoint = Vector2.new(0.5, 0.35)
 	msg.Position = UDim2.new(0.5, 0, 0.35, 0)
 	msg.Size = UDim2.fromOffset(900, 80)
@@ -367,14 +440,27 @@ playerDied.OnClientEvent:Connect(function(_newLevel: number)
 	tween:Play()
 end)
 
-playerEaten.OnClientEvent:Connect(function(mode: unknown, otherName: unknown, pointsAwarded: unknown?)
-	if mode == "eater" and typeof(otherName) == "string" and typeof(pointsAwarded) == "number" then
-		showEatMessage(
-			string.format("You ate %s! +%d points", otherName :: string, pointsAwarded :: number),
-			Color3.fromRGB(60, 210, 100),
+playerKilled.OnClientEvent:Connect(function(role: unknown, otherName: unknown, pointsAwarded: unknown?)
+	if role == "killer" and typeof(otherName) == "string" and typeof(pointsAwarded) == "number" then
+		showTimedCombatMessage(
+			string.format("You killed %s! +%d points", otherName :: string, pointsAwarded :: number),
+			Color3.fromRGB(60, 220, 100),
 			2
 		)
-	elseif mode == "eaten" and typeof(otherName) == "string" then
-		showEatMessage(string.format("You were eaten by %s!", otherName :: string), Color3.fromRGB(220, 45, 45), 2)
+	elseif role == "victim" and typeof(otherName) == "string" then
+		showTimedCombatMessage(
+			string.format("You were killed by %s!", otherName :: string),
+			Color3.fromRGB(220, 45, 45),
+			2
+		)
+	end
+end)
+
+UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+	if gameProcessed then
+		return
+	end
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		attackRequest:FireServer()
 	end
 end)

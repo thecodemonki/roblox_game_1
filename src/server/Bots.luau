@@ -10,7 +10,7 @@ export type BotConfig = {
 	foodFolder: Folder,
 	mapHalf: number,
 	foodRespawnDelay: number,
-	spawnFood: () -> (),
+	spawnFood: (() -> ())?,
 	getNearestPlayerRoot: (fromPos: Vector3, maxDist: number) -> (Player?, BasePart?),
 	damagePlayerFromBot: (botModel: Model, target: Player, damage: number) -> (),
 	tryBotMelee: (botModel: Model, damage: number) -> (),
@@ -89,9 +89,10 @@ local function pickUniqueBotName(): string
 end
 
 local function randomGroundGoal(mapHalf: number): Vector3
+	-- Slightly above flat ground (Forest floor top Y=0).
 	return Vector3.new(
 		math.random(-mapHalf, mapHalf),
-		4,
+		3,
 		math.random(-mapHalf, mapHalf)
 	)
 end
@@ -128,10 +129,12 @@ local function eatNearbyFood(root: BasePart, c: BotConfig)
 		return
 	end
 	for _, child in c.foodFolder:GetChildren() do
-		if child:IsA("BasePart") and child.Name == "FoodPellet" then
+		if child:IsA("BasePart") and child:GetAttribute("FoodPickup") == true then
 			if (child.Position - root.Position).Magnitude < 5 then
 				child:Destroy()
-				task.delay(c.foodRespawnDelay, c.spawnFood)
+				if c.spawnFood then
+					task.delay(c.foodRespawnDelay, c.spawnFood)
+				end
 				return
 			end
 		end

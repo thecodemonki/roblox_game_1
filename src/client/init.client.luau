@@ -7,6 +7,21 @@ local CollectionService = game:GetService("CollectionService")
 local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
+-- Large map: allow zooming out so the terrain stays visible around the character.
+player.CameraMaxZoomDistance = math.max(player.CameraMaxZoomDistance, 720)
+player.CameraMinZoomDistance = math.min(player.CameraMinZoomDistance, 0.5)
+
+local function applyMapCamera()
+	local cam = Workspace.CurrentCamera
+	if cam then
+		cam.FieldOfView = math.max(cam.FieldOfView, 74)
+	end
+end
+applyMapCamera()
+Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(applyMapCamera)
+player.CharacterAdded:Connect(function()
+	task.defer(applyMapCamera)
+end)
 local pointsUpdate = ReplicatedStorage:WaitForChild("PointsUpdate") :: RemoteEvent
 local levelUpRemote = ReplicatedStorage:WaitForChild("LevelUp") :: RemoteEvent
 local animalPicked = ReplicatedStorage:WaitForChild("AnimalPicked") :: RemoteEvent
@@ -742,6 +757,173 @@ RunService.RenderStepped:Connect(function()
 	bushTintFrame.BackgroundTransparency = tint
 end)
 
+-- --- Minimap (bottom right; M to toggle) ---
+local MINIMAP_STUDS = 800
+local MINIMAP_PX = 150
+local MINIMAP_SCALE = MINIMAP_PX / MINIMAP_STUDS
+
+local minimapGui = Instance.new("ScreenGui")
+minimapGui.Name = "MinimapHud"
+minimapGui.ResetOnSpawn = false
+minimapGui.DisplayOrder = 16
+minimapGui.IgnoreGuiInset = true
+minimapGui.Enabled = true
+minimapGui.Parent = playerGui
+
+local minimapStack = Instance.new("Frame")
+minimapStack.Name = "MinimapStack"
+minimapStack.AnchorPoint = Vector2.new(1, 1)
+minimapStack.Position = UDim2.new(1, -14, 1, -14)
+minimapStack.Size = UDim2.fromOffset(150, 188)
+minimapStack.BackgroundTransparency = 1
+minimapStack.BorderSizePixel = 0
+minimapStack.Parent = minimapGui
+
+local minimapList = Instance.new("UIListLayout")
+minimapList.FillDirection = Enum.FillDirection.Vertical
+minimapList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+minimapList.VerticalAlignment = Enum.VerticalAlignment.Top
+minimapList.Padding = UDim.new(0, 4)
+minimapList.SortOrder = Enum.SortOrder.LayoutOrder
+minimapList.Parent = minimapStack
+
+local mapTitleLabel = Instance.new("TextLabel")
+mapTitleLabel.Name = "MapTitle"
+mapTitleLabel.LayoutOrder = 1
+mapTitleLabel.Size = UDim2.new(1, 0, 0, 14)
+mapTitleLabel.BackgroundTransparency = 1
+mapTitleLabel.Font = Enum.Font.GothamBlack
+mapTitleLabel.TextSize = 11
+mapTitleLabel.TextColor3 = Color3.fromRGB(220, 220, 230)
+mapTitleLabel.Text = "MAP"
+mapTitleLabel.TextXAlignment = Enum.TextXAlignment.Center
+mapTitleLabel.Parent = minimapStack
+
+local minimapContainer = Instance.new("Frame")
+minimapContainer.Name = "Minimap"
+minimapContainer.LayoutOrder = 2
+minimapContainer.Size = UDim2.fromOffset(MINIMAP_PX, MINIMAP_PX)
+minimapContainer.BackgroundColor3 = Color3.fromRGB(8, 10, 16)
+minimapContainer.BackgroundTransparency = 0.42
+minimapContainer.BorderSizePixel = 0
+minimapContainer.ClipsDescendants = true
+minimapContainer.Parent = minimapStack
+
+local minimapCorner = Instance.new("UICorner")
+minimapCorner.CornerRadius = UDim.new(0, 10)
+minimapCorner.Parent = minimapContainer
+
+local minimapAnimalLabel = Instance.new("TextLabel")
+minimapAnimalLabel.Name = "AnimalName"
+minimapAnimalLabel.LayoutOrder = 3
+minimapAnimalLabel.Size = UDim2.new(1, 0, 0, 16)
+minimapAnimalLabel.BackgroundTransparency = 1
+minimapAnimalLabel.Font = Enum.Font.GothamMedium
+minimapAnimalLabel.TextSize = 11
+minimapAnimalLabel.TextColor3 = Color3.fromRGB(190, 195, 210)
+minimapAnimalLabel.Text = "—"
+minimapAnimalLabel.TextTruncate = Enum.TextTruncate.AtEnd
+minimapAnimalLabel.TextXAlignment = Enum.TextXAlignment.Center
+minimapAnimalLabel.Parent = minimapStack
+
+local function minimapWorldDeltaToPixel(dx: number, dz: number): (number, number)
+	local half = MINIMAP_PX / 2
+	local px = half + dx * MINIMAP_SCALE
+	local py = half - dz * MINIMAP_SCALE
+	return px, py
+end
+
+local function minimapAddDot(parent: Instance, px: number, py: number, color: Color3, z: number)
+	local dot = Instance.new("Frame")
+	dot.Name = "Dot"
+	dot.AnchorPoint = Vector2.new(0.5, 0.5)
+	dot.Size = UDim2.fromOffset(6, 6)
+	dot.Position = UDim2.fromOffset(px, py)
+	dot.BackgroundColor3 = color
+	dot.BorderSizePixel = 0
+	dot.ZIndex = z
+	dot.Parent = parent
+	local dc = Instance.new("UICorner")
+	dc.CornerRadius = UDim.new(1, 0)
+	dc.Parent = dot
+end
+
+local function minimapUpdateDots()
+	for _, child in minimapContainer:GetChildren() do
+		if child:IsA("Frame") and child.Name == "Dot" then
+			child:Destroy()
+		end
+	end
+
+	local char = player.Character
+	local hrp = if char then char:FindFirstChild("HumanoidRootPart") else nil
+	if not hrp or not hrp:IsA("BasePart") then
+		return
+	end
+	local pPos = (hrp :: BasePart).Position
+
+	minimapAddDot(minimapContainer, MINIMAP_PX / 2, MINIMAP_PX / 2, Color3.fromRGB(255, 255, 255), 10)
+
+	for _, plr in Players:GetPlayers() do
+		if plr ~= player then
+			local ch = plr.Character
+			local r = ch and ch:FindFirstChild("HumanoidRootPart")
+			if r and r:IsA("BasePart") then
+				local q = (r :: BasePart).Position
+				local px, py = minimapWorldDeltaToPixel(q.X - pPos.X, q.Z - pPos.Z)
+				minimapAddDot(minimapContainer, px, py, Color3.fromRGB(255, 60, 60), 5)
+			end
+		end
+	end
+
+	local botsFolder = Workspace:FindFirstChild("Bots")
+	if botsFolder and botsFolder:IsA("Folder") then
+		for _, m in botsFolder:GetChildren() do
+			if m:IsA("Model") and m:GetAttribute("EvolveBot") == true then
+				local r = m:FindFirstChild("HumanoidRootPart")
+				if r and r:IsA("BasePart") then
+					local q = (r :: BasePart).Position
+					local px, py = minimapWorldDeltaToPixel(q.X - pPos.X, q.Z - pPos.Z)
+					minimapAddDot(minimapContainer, px, py, Color3.fromRGB(255, 160, 50), 5)
+				end
+			end
+		end
+	end
+
+	local chestsFolder = Workspace:FindFirstChild("Chests")
+	if chestsFolder and chestsFolder:IsA("Folder") then
+		for _, p in chestsFolder:GetChildren() do
+			if p:IsA("BasePart") then
+				local q = p.Position
+				local px, py = minimapWorldDeltaToPixel(q.X - pPos.X, q.Z - pPos.Z)
+				minimapAddDot(minimapContainer, px, py, Color3.fromRGB(255, 220, 70), 4)
+			end
+		end
+	end
+end
+
+UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+	if gameProcessed then
+		return
+	end
+	if UserInputService:GetFocusedTextBox() ~= nil then
+		return
+	end
+	if input.KeyCode == Enum.KeyCode.M then
+		minimapGui.Enabled = not minimapGui.Enabled
+	end
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(0.5)
+		if minimapGui.Enabled then
+			minimapUpdateDots()
+		end
+	end
+end)
+task.defer(minimapUpdateDots)
+
 -- --- Shop (chest purchases) ---
 local SHOP_COMMON_PRICE = 50
 local SHOP_RARE_PRICE = 150
@@ -1237,6 +1419,7 @@ local function showEvolutionPick(newLevel: number, choices: { AnimalChoice })
 				return
 			end
 			picked = true
+			minimapAnimalLabel.Text = animal.name
 			animalPicked:FireServer(animal.name)
 
 			for _, other in cardButtons do

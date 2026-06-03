@@ -1,9 +1,13 @@
 -- Evolve Game Server
 -- Phase 1: Food spawning + points system + basic combat
 
+print("Server script loaded successfully")
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+
+print("[Server] init.server.luau starting (Evolve game)")
 
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local AnimalPools = require(Shared:WaitForChild("AnimalPools"))
@@ -29,7 +33,6 @@ local voidBeastUnlocked = ReplicatedStorage:WaitForChild("VoidBeastUnlocked") ::
 local rankedTimerSync = ReplicatedStorage:WaitForChild("RankedTimerSync") :: RemoteEvent
 
 local Bots = require(script:WaitForChild("Bots"))
-local ForestMap = require(script:WaitForChild("ForestMap"))
 
 local EVOLUTION_FF_NAME = "EvolutionPickShield"
 
@@ -76,14 +79,13 @@ local function getMinPointsForLevel(targetLevel: number): number
 end
 
 -- Config
-local FOOD_COUNT = 50        -- how many pellets on map at once
-local FOOD_SIZE = 2          -- size of each pellet
-local MAP_SIZE = 200         -- how big the map is (half-width; 400x400 play area)
+local MAP_SIZE = 400         -- half-width in studs (800x800 play area; matches Forest floor)
+local MAP_SURFACE_Y = 0      -- top of Workspace.Ground from MapSetup.server
 local DEFAULT_PLAYER_WALK_SPEED = 16
 local POINTS_PER_FOOD = 1    -- points per pellet eaten
 local POINTS_PER_KILL = 15
 local BOT_MELEE_COOLDOWN = 1.5
-local RESPAWN_DELAY = 3      -- seconds before pellet respawns
+local RESPAWN_DELAY = 3      -- bot eat → delayed respawn via Bots.spawnFood
 local CHEST_COUNT = 5
 local CHEST_OPEN_RANGE = 5
 local CHEST_RESPAWN_SEC = 60
@@ -269,36 +271,61 @@ local function showFloatingDamage(root: BasePart, amount: number)
 	end)
 end
 
-ForestMap.build(workspace, MAP_SIZE)
+-- Food folder + steady spawning (single script; no separate FoodSpawner).
+local FOOD_FOLDER_NAME = "Food"
+local FOOD_MAX_COUNT = 80
+local FOOD_SPAWN_INTERVAL_SEC = 1.5
+local FOOD_SPAWN_RANGE = 350
+local FOOD_SIZE = 2.5
+local FOOD_SPAWN_Y = 2
+local FOOD_INITIAL_SPAWN_COUNT = 10
+local FOOD_REPLENISH_AFTER_EAT_SEC = 1.5
 
--- Create food folder
-local foodFolder = Instance.new("Folder")
-foodFolder.Name = "Food"
-foodFolder.Parent = workspace
+local foodFolder = workspace:FindFirstChild(FOOD_FOLDER_NAME)
+if not foodFolder then
+	foodFolder = Instance.new("Folder")
+	foodFolder.Name = FOOD_FOLDER_NAME
+	foodFolder.Parent = workspace
+end
+if not foodFolder:IsA("Folder") then
+	error("[Food] Workspace." .. FOOD_FOLDER_NAME .. " must be a Folder")
+end
+foodFolder = foodFolder :: Folder
 
--- Spawn a single food pellet at random position
-local function spawnFood()
-	local food = Instance.new("Part")
-	food.Name = "FoodPellet"
-	food.Shape = Enum.PartType.Ball
-	food.Size = Vector3.new(FOOD_SIZE, FOOD_SIZE, FOOD_SIZE)
-	food.Position = Vector3.new(
-		math.random(-MAP_SIZE, MAP_SIZE),
-		2,
-		math.random(-MAP_SIZE, MAP_SIZE)
+local function spawnFoodPellet()
+	if #foodFolder:GetChildren() >= FOOD_MAX_COUNT then
+		return
+	end
+	local pellet = Instance.new("Part")
+	pellet.Name = "FoodPellet"
+	pellet.Shape = Enum.PartType.Ball
+	pellet.Size = Vector3.new(FOOD_SIZE, FOOD_SIZE, FOOD_SIZE)
+	pellet.Position = Vector3.new(
+		math.random(-FOOD_SPAWN_RANGE, FOOD_SPAWN_RANGE),
+		FOOD_SPAWN_Y,
+		math.random(-FOOD_SPAWN_RANGE, FOOD_SPAWN_RANGE)
 	)
-	food.Anchored = true
-	food.BrickColor = BrickColor.new("Bright green")
-	food.Material = Enum.Material.Neon
-	food.CanCollide = false
-	food.Parent = foodFolder
-	return food
+	pellet.Anchored = true
+	pellet.CanCollide = false
+	pellet.Transparency = 0
+	pellet.Color = Color3.fromRGB(255, 200, 50)
+	pellet.Material = Enum.Material.Neon
+	pellet:SetAttribute("FoodPickup", true)
+	pellet.Parent = foodFolder
 end
 
--- Spawn all food on start
-for i = 1, FOOD_COUNT do
-	spawnFood()
+for _ = 1, FOOD_INITIAL_SPAWN_COUNT do
+	spawnFoodPellet()
 end
+
+task.spawn(function()
+	while true do
+		spawnFoodPellet()
+		task.wait(FOOD_SPAWN_INTERVAL_SEC)
+	end
+end)
+
+print("[Server] Food folder: " .. foodFolder:GetFullName() .. " (" .. tostring(#foodFolder:GetChildren()) .. " pellets after initial spawn)")
 
 -- Chests (glowing gold) + skin drops
 local chestFolder = Instance.new("Folder")
@@ -310,7 +337,7 @@ local chestSlots: { BasePart? } = {}
 local function randomChestPosition(): Vector3
 	return Vector3.new(
 		math.random(-MAP_SIZE, MAP_SIZE),
-		CHEST_SIZE / 2 + 2,
+		MAP_SURFACE_Y + CHEST_SIZE / 2,
 		math.random(-MAP_SIZE, MAP_SIZE)
 	)
 end
@@ -1057,7 +1084,6 @@ local function onPlayerAdded(player)
 		local humanoid = character:WaitForChild("Humanoid") :: Humanoid
 		humanoid.MaxHealth = 100
 		humanoid.Health = 100
-		humanoid.FallDamageEnabled = false
 
 		humanoid.Died:Connect(function()
 			handlePlayerDeath(player, character)
@@ -1113,32 +1139,17 @@ local function onPlayerAdded(player)
 				end
 				playerRankedSurvivalAccum[player] = rAcc
 
-				if ForestMap.isPositionInRiver(rootPart.Position) then
-					hum.WalkSpeed = DEFAULT_PLAYER_WALK_SPEED * 0.7
-				else
-					hum.WalkSpeed = DEFAULT_PLAYER_WALK_SPEED
-				end
+				hum.WalkSpeed = DEFAULT_PLAYER_WALK_SPEED
 
 				updateSurvivalCrownThrottled()
 			end
 
-			for _, food in ipairs(foodFolder:GetChildren()) do
-				if food:IsA("BasePart") then
-					local distance = (rootPart.Position - food.Position).Magnitude
-					if distance < 5 then
-						-- Eat the food
-						food:Destroy()
-						addPoints(player, POINTS_PER_FOOD)
-
-						-- Respawn food after delay
-						task.delay(RESPAWN_DELAY, function()
-							spawnFood()
-						end)
-					end
-				end
+			local hrp = character:FindFirstChild("HumanoidRootPart")
+			if hrp and hrp:IsA("BasePart") then
+				tryOpenNearbyChest(player, (hrp :: BasePart).Position)
+			else
+				tryOpenNearbyChest(player, rootPart.Position)
 			end
-
-			tryOpenNearbyChest(player, rootPart.Position)
 		end)
 	end)
 end
@@ -1229,7 +1240,7 @@ purchaseChest.OnServerInvoke = function(player: Player, chestKind: unknown): boo
 	if playerCoins[player] == nil or playerSkins[player] == nil then
 		return false
 	end
-	local price = if k == "Rare" then SHOP_CHEST_RARE_PRICE else SHOP_CHEST_COMMON_PRICE end
+	local price = if k == "Rare" then SHOP_CHEST_RARE_PRICE else SHOP_CHEST_COMMON_PRICE
 	if playerCoins[player] < price then
 		return false
 	end
@@ -1271,7 +1282,7 @@ Bots.setup({
 	foodFolder = foodFolder,
 	mapHalf = MAP_SIZE,
 	foodRespawnDelay = RESPAWN_DELAY,
-	spawnFood = spawnFood,
+	spawnFood = spawnFoodPellet,
 	getNearestPlayerRoot = getNearestPlayerRoot,
 	damagePlayerFromBot = damagePlayerFromBot,
 	tryBotMelee = tryBotMelee,
@@ -1286,6 +1297,43 @@ end)
 
 RunService.Heartbeat:Connect(function(dt: number)
 	Bots.onHeartbeat(dt)
+end)
+
+-- Food eating: throttled server tick (not every frame), separate from per-player character Heartbeat.
+local foodEatAccum = 0.0
+RunService.Heartbeat:Connect(function(dt: number)
+	foodEatAccum += dt
+	while foodEatAccum >= 0.1 do
+		foodEatAccum -= 0.1
+		local foodsFolder = workspace:FindFirstChild("Food")
+		if not foodsFolder or not foodsFolder:IsA("Folder") then
+			continue
+		end
+		for _, player in ipairs(Players:GetPlayers()) do
+			local char = player.Character
+			local rootPart = char and char:FindFirstChild("HumanoidRootPart")
+			if not rootPart or not rootPart:IsA("BasePart") then
+				continue
+			end
+			local root = rootPart :: BasePart
+			for _, food in ipairs(foodsFolder:GetChildren()) do
+				if food:IsA("BasePart") and food:GetAttribute("FoodPickup") == true and food.Parent ~= nil then
+					local distance = (root.Position - food.Position).Magnitude
+					if distance < 5 then
+						food:Destroy()
+						if playerPoints[player] ~= nil then
+							addPoints(player, POINTS_PER_FOOD)
+							local total = playerPoints[player] :: number
+							local lv = getLevelFromPoints(total)
+							pointsUpdate:FireClient(player, total, lv)
+							print("Player ate food, points: " .. tostring(total))
+							task.delay(FOOD_REPLENISH_AFTER_EAT_SEC, spawnFoodPellet)
+						end
+					end
+				end
+			end
+		end
+	end
 end)
 
 task.spawn(function()

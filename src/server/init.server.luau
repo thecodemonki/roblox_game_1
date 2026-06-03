@@ -29,6 +29,7 @@ local voidBeastUnlocked = ReplicatedStorage:WaitForChild("VoidBeastUnlocked") ::
 local rankedTimerSync = ReplicatedStorage:WaitForChild("RankedTimerSync") :: RemoteEvent
 
 local Bots = require(script:WaitForChild("Bots"))
+local ForestMap = require(script:WaitForChild("ForestMap"))
 
 local EVOLUTION_FF_NAME = "EvolutionPickShield"
 
@@ -77,7 +78,8 @@ end
 -- Config
 local FOOD_COUNT = 50        -- how many pellets on map at once
 local FOOD_SIZE = 2          -- size of each pellet
-local MAP_SIZE = 200         -- how big the map is
+local MAP_SIZE = 200         -- how big the map is (half-width; 400x400 play area)
+local DEFAULT_PLAYER_WALK_SPEED = 16
 local POINTS_PER_FOOD = 1    -- points per pellet eaten
 local POINTS_PER_KILL = 15
 local BOT_MELEE_COOLDOWN = 1.5
@@ -266,6 +268,8 @@ local function showFloatingDamage(root: BasePart, amount: number)
 		end
 	end)
 end
+
+ForestMap.build(workspace, MAP_SIZE)
 
 -- Create food folder
 local foodFolder = Instance.new("Folder")
@@ -1108,6 +1112,12 @@ local function onPlayerAdded(player)
 					addRankedPoints(player, 1)
 				end
 				playerRankedSurvivalAccum[player] = rAcc
+
+				if ForestMap.isPositionInRiver(rootPart.Position) then
+					hum.WalkSpeed = DEFAULT_PLAYER_WALK_SPEED * 0.7
+				else
+					hum.WalkSpeed = DEFAULT_PLAYER_WALK_SPEED
+				end
 
 				updateSurvivalCrownThrottled()
 			end

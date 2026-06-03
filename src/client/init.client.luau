@@ -3,6 +3,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
 local pointsUpdate = ReplicatedStorage:WaitForChild("PointsUpdate") :: RemoteEvent
@@ -692,6 +694,52 @@ end
 
 voidBeastUnlocked.OnClientEvent:Connect(function()
 	showVoidBeastUnlock()
+end)
+
+-- Bush proximity: subtle full-screen tint while HRP is inside tagged Forest bushes.
+local FOREST_BUSH_TAG = "ForestBush"
+local bushTintGui = Instance.new("ScreenGui")
+bushTintGui.Name = "BushTint"
+bushTintGui.ResetOnSpawn = false
+bushTintGui.DisplayOrder = 9
+bushTintGui.IgnoreGuiInset = true
+bushTintGui.Parent = playerGui
+
+local bushTintFrame = Instance.new("Frame")
+bushTintFrame.Name = "Tint"
+bushTintFrame.Size = UDim2.fromScale(1, 1)
+bushTintFrame.BackgroundColor3 = Color3.fromRGB(12, 28, 18)
+bushTintFrame.BackgroundTransparency = 1
+bushTintFrame.BorderSizePixel = 0
+bushTintFrame.Active = false
+bushTintFrame.Parent = bushTintGui
+
+local function pointInBushEllipsoid(world: Vector3, bush: BasePart): boolean
+	local d = world - bush.Position
+	local h = bush.Size * 0.5
+	if h.X < 0.05 or h.Y < 0.05 or h.Z < 0.05 then
+		return false
+	end
+	local nx = d.X / h.X
+	local ny = d.Y / h.Y
+	local nz = d.Z / h.Z
+	return nx * nx + ny * ny + nz * nz <= 1.08
+end
+
+RunService.RenderStepped:Connect(function()
+	local char = player.Character
+	local hrp = if char then char:FindFirstChild("HumanoidRootPart") else nil
+	local tint = 1
+	if hrp and hrp:IsA("BasePart") then
+		local pos = (hrp :: BasePart).Position
+		for _, inst in ipairs(CollectionService:GetTagged(FOREST_BUSH_TAG)) do
+			if inst:IsA("BasePart") and inst:IsDescendantOf(Workspace) and pointInBushEllipsoid(pos, inst) then
+				tint = 0.52
+				break
+			end
+		end
+	end
+	bushTintFrame.BackgroundTransparency = tint
 end)
 
 -- --- Shop (chest purchases) ---

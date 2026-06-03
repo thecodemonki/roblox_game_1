@@ -48,6 +48,12 @@
       },
       "PurchaseChest": {
         "$className": "RemoteFunction"
+      },
+      "SurvivalBonus": {
+        "$className": "RemoteEvent"
+      },
+      "SurvivalStreakSync": {
+        "$className": "RemoteEvent"
       }
     },
 

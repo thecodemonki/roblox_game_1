@@ -19,6 +19,8 @@ local skinReceived = ReplicatedStorage:WaitForChild("SkinReceived") :: RemoteEve
 local skinInventorySync = ReplicatedStorage:WaitForChild("SkinInventorySync") :: RemoteEvent
 local coinsUpdated = ReplicatedStorage:WaitForChild("CoinsUpdated") :: RemoteEvent
 local purchaseChest = ReplicatedStorage:WaitForChild("PurchaseChest") :: RemoteFunction
+local survivalBonus = ReplicatedStorage:WaitForChild("SurvivalBonus") :: RemoteEvent
+local survivalStreakSync = ReplicatedStorage:WaitForChild("SurvivalStreakSync") :: RemoteEvent
 
 local playerGui = player:WaitForChild("PlayerGui")
 
@@ -217,7 +219,7 @@ local invOpen = false
 local invPanel = Instance.new("Frame")
 invPanel.Name = "SkinInventoryPanel"
 invPanel.AnchorPoint = Vector2.new(0, 1)
-invPanel.Position = UDim2.new(0, 12, 1, -54)
+invPanel.Position = UDim2.new(0, 12, 1, -100)
 invPanel.Size = UDim2.fromOffset(360, 300)
 invPanel.BackgroundColor3 = Color3.fromRGB(22, 22, 28)
 invPanel.BackgroundTransparency = 0.12
@@ -278,6 +280,25 @@ invButton.Parent = skinScreenGui
 local invBtnCorner = Instance.new("UICorner")
 invBtnCorner.CornerRadius = UDim.new(0, 8)
 invBtnCorner.Parent = invButton
+
+local survivalStreakLabel = Instance.new("TextLabel")
+survivalStreakLabel.Name = "SurvivalStreakHud"
+survivalStreakLabel.AnchorPoint = Vector2.new(0, 1)
+survivalStreakLabel.Position = UDim2.new(0, 12, 1, -52)
+survivalStreakLabel.Size = UDim2.fromOffset(220, 22)
+survivalStreakLabel.BackgroundTransparency = 1
+survivalStreakLabel.Font = Enum.Font.GothamBold
+survivalStreakLabel.TextSize = 15
+survivalStreakLabel.TextColor3 = Color3.fromRGB(120, 220, 140)
+survivalStreakLabel.TextXAlignment = Enum.TextXAlignment.Left
+survivalStreakLabel.Text = "Alive: 0m 0s"
+survivalStreakLabel.Parent = skinScreenGui
+
+local function formatAliveTime(totalSec: number): string
+	local m = math.floor(totalSec / 60)
+	local s = math.floor(totalSec % 60)
+	return string.format("Alive: %dm %ds", m, s)
+end
 
 local function clearSkinCells()
 	for _, child in invScroll:GetChildren() do
@@ -414,6 +435,65 @@ skinInventorySync.OnClientEvent:Connect(function(payload: unknown)
 	end)
 	skinCatalog = nextCat
 	rebuildSkinGrid()
+end)
+
+survivalStreakSync.OnClientEvent:Connect(function(sec: unknown)
+	if typeof(sec) ~= "number" then
+		return
+	end
+	local n = math.max(0, math.floor(sec :: number))
+	survivalStreakLabel.Text = formatAliveTime(n)
+end)
+
+local function showSurvivalBonusPopup(message: string)
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "SurvivalBonusToast"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 230
+	gui.IgnoreGuiInset = true
+	gui.Parent = playerGui
+
+	local tl = Instance.new("TextLabel")
+	tl.AnchorPoint = Vector2.new(0, 0)
+	tl.Position = UDim2.new(0, 12, 0, 12)
+	tl.Size = UDim2.fromOffset(440, 48)
+	tl.BackgroundColor3 = Color3.fromRGB(18, 36, 26)
+	tl.BackgroundTransparency = 0.2
+	tl.BorderSizePixel = 0
+	tl.Text = message
+	tl.TextColor3 = Color3.fromRGB(90, 255, 130)
+	tl.Font = Enum.Font.GothamBold
+	tl.TextSize = 17
+	tl.TextWrapped = true
+	tl.TextXAlignment = Enum.TextXAlignment.Left
+	tl.TextYAlignment = Enum.TextYAlignment.Center
+	local pad = Instance.new("UIPadding")
+	pad.PaddingLeft = UDim.new(0, 12)
+	pad.PaddingRight = UDim.new(0, 12)
+	pad.Parent = tl
+	tl.Parent = gui
+
+	local cr = Instance.new("UICorner")
+	cr.CornerRadius = UDim.new(0, 8)
+	cr.Parent = tl
+
+	local tween = TweenService:Create(
+		tl,
+		TweenInfo.new(2, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+		{ BackgroundTransparency = 1, TextTransparency = 1 }
+	)
+	tween.Completed:Connect(function()
+		if gui.Parent then
+			gui:Destroy()
+		end
+	end)
+	tween:Play()
+end
+
+survivalBonus.OnClientEvent:Connect(function(msg: unknown)
+	if typeof(msg) == "string" then
+		showSurvivalBonusPopup(msg :: string)
+	end
 end)
 
 -- --- Shop (chest purchases) ---
@@ -976,6 +1056,7 @@ levelUpRemote.OnClientEvent:Connect(function(newLevel: number, choices: unknown?
 end)
 
 playerDied.OnClientEvent:Connect(function(_newLevel: number)
+	survivalStreakLabel.Text = formatAliveTime(0)
 	local evo = playerGui:FindFirstChild("EvolutionPick")
 	if evo then
 		evo:Destroy()

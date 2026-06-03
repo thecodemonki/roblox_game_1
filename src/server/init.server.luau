@@ -22,6 +22,8 @@ local skinReceived = ReplicatedStorage:WaitForChild("SkinReceived") :: RemoteEve
 local skinInventorySync = ReplicatedStorage:WaitForChild("SkinInventorySync") :: RemoteEvent
 local coinsUpdated = ReplicatedStorage:WaitForChild("CoinsUpdated") :: RemoteEvent
 local purchaseChest = ReplicatedStorage:WaitForChild("PurchaseChest") :: RemoteFunction
+local survivalBonus = ReplicatedStorage:WaitForChild("SurvivalBonus") :: RemoteEvent
+local survivalStreakSync = ReplicatedStorage:WaitForChild("SurvivalStreakSync") :: RemoteEvent
 
 local Bots = require(script:WaitForChild("Bots"))
 
@@ -89,6 +91,15 @@ local COINS_PER_LEVEL_UP = 3
 local SHOP_CHEST_COMMON_PRICE = 50
 local SHOP_CHEST_RARE_PRICE = 150
 
+local PLAYTIME_MILESTONE_5M = 300
+local PLAYTIME_MILESTONE_20M = 1200
+local PLAYTIME_MILESTONE_1H = 3600
+local PLAYTIME_MILESTONE_5H = 18000
+local SURVIVAL_BONUS_3M = 180
+local SURVIVAL_BONUS_10M = 600
+local CROWN_REEVAL_INTERVAL = 0.4
+local SURVIVAL_SYNC_INTERVAL = 1
+
 local ATTACK_RANGE = 8
 local ATTACK_HALF_ARC_DEG = 90 -- 180° total in front
 
@@ -125,6 +136,12 @@ local playerSkins: { [Player]: { [string]: { level: number, rarity: string } } }
 local playerCoins: { [Player]: number } = {}
 local playerPlaytimeAccumSec: { [Player]: number } = {}
 local playerHeartbeatConn: { [Player]: RBXScriptConnection? } = {}
+-- Monotonic session seconds (alive only); used for one-time playtime milestone rewards.
+local playerSessionPlaytimeTotal: { [Player]: number } = {}
+local playerPlaytimeMilestonesDone: { [Player]: { [string]: boolean } } = {}
+-- Current life survival streak (seconds); resets on death.
+local playerSurvivalSec: { [Player]: number } = {}
+local playerLastSurvivalStreakSync: { [Player]: number } = {}
 
 local SKINS_COMMON = {
 	"Golden Chicken",
@@ -354,6 +371,27 @@ local function rollRandomSkinShopRare(): (string, string)
 	return pool[math.random(1, #pool)], rarity
 end
 
+-- Playtime 1h reward: favor Epic (Common 10%, Rare 20%, Epic 55%, Legendary 15%)
+local function rollPlaytimeEpicChest(): (string, string)
+	local r = math.random(1, 100)
+	local rarity: string
+	local pool: { string }
+	if r <= 10 then
+		rarity = "Common"
+		pool = SKINS_COMMON
+	elseif r <= 30 then
+		rarity = "Rare"
+		pool = SKINS_RARE
+	elseif r <= 85 then
+		rarity = "Epic"
+		pool = SKINS_EPIC
+	else
+		rarity = "Legendary"
+		pool = SKINS_LEGENDARY
+	end
+	return pool[math.random(1, #pool)], rarity
+end
+
 local function getSkinListSerializable(player: Player): { { name: string, rarity: string, level: number } }
 	local inv = playerSkins[player]
 	local out: { { name: string, rarity: string, level: number } } = {}
@@ -434,10 +472,105 @@ local function tryOpenNearbyChest(player: Player, rootPos: Vector3)
 	end
 end
 
+local crownLeader: Player? = nil
+local lastCrownHeartbeatEval = 0
+
+local function destroyCrownOnCharacter(character: Model)
+	for _, d in character:GetDescendants() do
+		if d.Name == "SurvivalCrown" and d:IsA("BillboardGui") then
+			d:Destroy()
+		end
+	end
+end
+
+local function attachCrownToCharacter(character: Model)
+	destroyCrownOnCharacter(character)
+	local head = character:FindFirstChild("Head") :: BasePart?
+	local adornee = head or character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not adornee then
+		return
+	end
+	local bb = Instance.new("BillboardGui")
+	bb.Name = "SurvivalCrown"
+	bb.Size = UDim2.fromOffset(72, 56)
+	bb.StudsOffset = Vector3.new(0, 2.5, 0)
+	bb.AlwaysOnTop = true
+	bb.LightInfluence = 0
+	bb.Parent = adornee
+	local tl = Instance.new("TextLabel")
+	tl.Size = UDim2.fromScale(1, 1)
+	tl.BackgroundTransparency = 1
+	tl.Text = "\u{1F451}"
+	tl.TextScaled = true
+	tl.Parent = bb
+end
+
+local function pickSurvivalLeaderPlayer(): Player?
+	local bestP: Player? = nil
+	local bestS = -1
+	for _, plr in Players:GetPlayers() do
+		local ch = plr.Character
+		local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+		if playerPoints[plr] ~= nil and ch and hum and hum.Health > 0 then
+			local s = playerSurvivalSec[plr] or 0
+			if s > bestS then
+				bestS = s
+				bestP = plr
+			elseif s == bestS and s > 0 then
+				if bestP == nil or plr.UserId < bestP.UserId then
+					bestP = plr
+				end
+			end
+		end
+	end
+	if bestS <= 0 then
+		return nil
+	end
+	return bestP
+end
+
+local function updateSurvivalCrownCore()
+	local newLeader = pickSurvivalLeaderPlayer()
+	if newLeader == crownLeader then
+		if newLeader then
+			local ch = newLeader.Character
+			if ch and not ch:FindFirstChild("SurvivalCrown", true) then
+				attachCrownToCharacter(ch)
+			end
+		end
+		return
+	end
+	if crownLeader then
+		local oldCh = crownLeader.Character
+		if oldCh then
+			destroyCrownOnCharacter(oldCh)
+		end
+	end
+	crownLeader = newLeader
+	if crownLeader then
+		local ch = crownLeader.Character
+		if ch then
+			attachCrownToCharacter(ch)
+		end
+	end
+end
+
+local function updateSurvivalCrownThrottled()
+	local t = tick()
+	if t - lastCrownHeartbeatEval < CROWN_REEVAL_INTERVAL then
+		return
+	end
+	lastCrownHeartbeatEval = t
+	updateSurvivalCrownCore()
+end
+
 local function handlePlayerDeath(player: Player, character: Model)
 	if playerPoints[player] == nil then
 		return
 	end
+
+	playerSurvivalSec[player] = 0
+	survivalStreakSync:FireClient(player, 0)
 
 	local currentLevel = getLevelFromPoints(playerPoints[player])
 	local newLevel = math.max(1, currentLevel - 2)
@@ -451,6 +584,7 @@ local function handlePlayerDeath(player: Player, character: Model)
 
 	pointsUpdate:FireClient(player, newPoints, newLevel)
 	playerDied:FireClient(player, newLevel)
+	updateSurvivalCrownCore()
 end
 
 local function addCoins(player: Player, delta: number)
@@ -490,6 +624,49 @@ local function addPoints(player, amount)
 		playerPoints[player] = playerPoints[player] + amount
 		print(player.Name .. " has " .. playerPoints[player] .. " points")
 		syncPointsAndLevel(player)
+	end
+end
+
+local function checkPlaytimeMilestones(player: Player, oldT: number, newT: number)
+	local m = playerPlaytimeMilestonesDone[player]
+	if not m then
+		return
+	end
+	if not m["5m"] and oldT < PLAYTIME_MILESTONE_5M and newT >= PLAYTIME_MILESTONE_5M then
+		m["5m"] = true
+		local sn, rr = rollRandomSkinWorld()
+		grantSkinFromRoll(player, sn, rr)
+	end
+	if not m["20m"] and oldT < PLAYTIME_MILESTONE_20M and newT >= PLAYTIME_MILESTONE_20M then
+		m["20m"] = true
+		local sn, rr = rollRandomSkinShopRare()
+		grantSkinFromRoll(player, sn, rr)
+		addCoins(player, 25)
+	end
+	if not m["1h"] and oldT < PLAYTIME_MILESTONE_1H and newT >= PLAYTIME_MILESTONE_1H then
+		m["1h"] = true
+		local sn, rr = rollPlaytimeEpicChest()
+		grantSkinFromRoll(player, sn, rr)
+	end
+	if not m["5h"] and oldT < PLAYTIME_MILESTONE_5H and newT >= PLAYTIME_MILESTONE_5H then
+		m["5h"] = true
+		local sn = SKINS_RARE[math.random(1, #SKINS_RARE)]
+		grantSkinFromRoll(player, sn, "Rare")
+	end
+end
+
+local function checkSurvivalMilestones(player: Player, prevS: number, newS: number)
+	if playerPoints[player] == nil then
+		return
+	end
+	if prevS < SURVIVAL_BONUS_3M and newS >= SURVIVAL_BONUS_3M then
+		addPoints(player, 10)
+		survivalBonus:FireClient(player, "3 min survival! +10 points")
+	end
+	if prevS < SURVIVAL_BONUS_10M and newS >= SURVIVAL_BONUS_10M then
+		addPoints(player, 30)
+		addCoins(player, 10)
+		survivalBonus:FireClient(player, "10 min survival! +30 points +10 coins")
 	end
 end
 
@@ -752,11 +929,16 @@ local function onPlayerAdded(player)
 	playerSkins[player] = {}
 	playerCoins[player] = 0
 	playerPlaytimeAccumSec[player] = 0
+	playerSessionPlaytimeTotal[player] = 0
+	playerPlaytimeMilestonesDone[player] = {}
+	playerSurvivalSec[player] = 0
+	playerLastSurvivalStreakSync[player] = 0
 	print(player.Name .. " joined. Points: 0")
 	pointsUpdate:FireClient(player, 0, 1)
 	titleSync:FireClient(player, playerTitle[player] :: string)
 	syncSkinInventory(player)
 	coinsUpdated:FireClient(player, 0)
+	survivalStreakSync:FireClient(player, 0)
 
 	-- When character spawns
 	player.CharacterAdded:Connect(function(character)
@@ -777,6 +959,10 @@ local function onPlayerAdded(player)
 
 		local rootPart = character:WaitForChild("HumanoidRootPart")
 
+		task.defer(function()
+			updateSurvivalCrownCore()
+		end)
+
 		local oldHb = playerHeartbeatConn[player]
 		if oldHb then
 			oldHb:Disconnect()
@@ -795,6 +981,27 @@ local function onPlayerAdded(player)
 				addCoins(player, COINS_PER_PLAYTIME_BONUS)
 			end
 			playerPlaytimeAccumSec[player] = acc
+
+			local hum = character:FindFirstChildOfClass("Humanoid")
+			if hum and hum.Health > 0 then
+				local oldSess = playerSessionPlaytimeTotal[player] or 0
+				local newSess = oldSess + dt
+				playerSessionPlaytimeTotal[player] = newSess
+				checkPlaytimeMilestones(player, oldSess, newSess)
+
+				local prevSurv = playerSurvivalSec[player] or 0
+				local newSurv = prevSurv + dt
+				playerSurvivalSec[player] = newSurv
+				checkSurvivalMilestones(player, prevSurv, newSurv)
+
+				local nowTick = tick()
+				if nowTick - (playerLastSurvivalStreakSync[player] or 0) >= SURVIVAL_SYNC_INTERVAL then
+					playerLastSurvivalStreakSync[player] = nowTick
+					survivalStreakSync:FireClient(player, math.floor(newSurv))
+				end
+
+				updateSurvivalCrownThrottled()
+			end
 
 			for _, food in ipairs(foodFolder:GetChildren()) do
 				if food:IsA("BasePart") then
@@ -829,6 +1036,18 @@ local function onPlayerRemoving(player)
 	playerSkins[player] = nil
 	playerCoins[player] = nil
 	playerPlaytimeAccumSec[player] = nil
+	playerSessionPlaytimeTotal[player] = nil
+	playerPlaytimeMilestonesDone[player] = nil
+	playerSurvivalSec[player] = nil
+	playerLastSurvivalStreakSync[player] = nil
+	if crownLeader == player then
+		local ch = player.Character
+		if ch then
+			destroyCrownOnCharacter(ch)
+		end
+		crownLeader = nil
+	end
+	updateSurvivalCrownCore()
 	local hb = playerHeartbeatConn[player]
 	if hb then
 		hb:Disconnect()

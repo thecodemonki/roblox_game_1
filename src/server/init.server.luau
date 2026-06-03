@@ -12,6 +12,7 @@ local pointsUpdate = ReplicatedStorage:WaitForChild("PointsUpdate") :: RemoteEve
 local levelUp = ReplicatedStorage:WaitForChild("LevelUp") :: RemoteEvent
 local animalPicked = ReplicatedStorage:WaitForChild("AnimalPicked") :: RemoteEvent
 local playerDied = ReplicatedStorage:WaitForChild("PlayerDied") :: RemoteEvent
+local playerEaten = ReplicatedStorage:WaitForChild("PlayerEaten") :: RemoteEvent
 
 local EVOLUTION_FF_NAME = "EvolutionPickShield"
 
@@ -57,13 +58,13 @@ local function getMinPointsForLevel(targetLevel: number): number
 	return 0
 end
 
--- Kill titles: intentionally not stored here yet; nothing to reset on death.
-
 -- Config
 local FOOD_COUNT = 50        -- how many pellets on map at once
 local FOOD_SIZE = 2          -- size of each pellet
 local MAP_SIZE = 200         -- how big the map is
 local POINTS_PER_FOOD = 1    -- points per pellet eaten
+local POINTS_PER_PLAYER_EAT = 15
+local PLAYER_EAT_RANGE = 6   -- studs between roots to consume
 local RESPAWN_DELAY = 3      -- seconds before pellet respawns
 
 -- Storage
@@ -71,6 +72,8 @@ local playerPoints = {}
 local playerLevel = {} -- last synced level (for LevelUp detection)
 local pendingEvolution: { [Player]: { choices: { { name: string, ability: string } }, expires: number } } = {}
 local playerAnimal: { [Player]: string } = {}
+-- Kill title progress: persists through death (handlePlayerDeath does not reset this).
+local playerKills: { [Player]: number } = {}
 
 local function addPickShield(player: Player)
 	local character = player.Character
@@ -190,10 +193,84 @@ local function addPoints(player, amount)
 	end
 end
 
+local function performEat(eater: Player, victim: Player)
+	local charV = victim.Character
+	if not charV then
+		return
+	end
+	local humV = charV:FindFirstChildOfClass("Humanoid")
+	if not humV or humV.Health <= 0 then
+		return
+	end
+
+	local now = workspace:GetServerTimeNow()
+	local pac = eater:GetAttribute("PacifistUntil")
+	if typeof(pac) == "number" and now < pac then
+		return
+	end
+
+	playerKills[eater] = (playerKills[eater] or 0) + 1
+	addPoints(eater, POINTS_PER_PLAYER_EAT)
+	playerEaten:FireClient(eater, "eater", victim.Name, POINTS_PER_PLAYER_EAT)
+	playerEaten:FireClient(victim, "eaten", eater.Name)
+	humV.Health = 0
+end
+
+local function tryConsumeOnePlayerPair()
+	local list = Players:GetPlayers()
+	for i = 1, #list do
+		local pa = list[i]
+		if playerPoints[pa] == nil then
+			continue
+		end
+		local charA = pa.Character
+		if not charA then
+			continue
+		end
+		local humA = charA:FindFirstChildOfClass("Humanoid")
+		local rootA = charA:FindFirstChild("HumanoidRootPart")
+		if not humA or not rootA or not rootA:IsA("BasePart") or humA.Health <= 0 then
+			continue
+		end
+
+		for j = i + 1, #list do
+			local pb = list[j]
+			if playerPoints[pb] == nil then
+				continue
+			end
+			local charB = pb.Character
+			if not charB then
+				continue
+			end
+			local humB = charB:FindFirstChildOfClass("Humanoid")
+			local rootB = charB:FindFirstChild("HumanoidRootPart")
+			if not humB or not rootB or not rootB:IsA("BasePart") or humB.Health <= 0 then
+				continue
+			end
+
+			local dist = (rootA :: BasePart).Position - (rootB :: BasePart).Position
+			if dist.Magnitude >= PLAYER_EAT_RANGE then
+				continue
+			end
+
+			local levelA = getLevelFromPoints(playerPoints[pa])
+			local levelB = getLevelFromPoints(playerPoints[pb])
+			if levelA > levelB then
+				performEat(pa, pb)
+				return
+			elseif levelB > levelA then
+				performEat(pb, pa)
+				return
+			end
+		end
+	end
+end
+
 -- Setup player when they join
 local function onPlayerAdded(player)
 	playerPoints[player] = 0
 	playerLevel[player] = 1
+	playerKills[player] = 0
 	print(player.Name .. " joined. Points: 0")
 	pointsUpdate:FireClient(player, 0, 1)
 
@@ -241,10 +318,15 @@ local function onPlayerRemoving(player)
 	playerLevel[player] = nil
 	pendingEvolution[player] = nil
 	playerAnimal[player] = nil
+	playerKills[player] = nil
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
 Players.PlayerRemoving:Connect(onPlayerRemoving)
+
+RunService.Heartbeat:Connect(function()
+	tryConsumeOnePlayerPair()
+end)
 
 animalPicked.OnServerEvent:Connect(function(player: Player, animalName: unknown)
 	if typeof(animalName) ~= "string" then

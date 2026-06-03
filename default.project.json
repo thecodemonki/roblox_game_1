@@ -18,6 +18,9 @@
       },
       "PlayerDied": {
         "$className": "RemoteEvent"
+      },
+      "PlayerEaten": {
+        "$className": "RemoteEvent"
       }
     },
 

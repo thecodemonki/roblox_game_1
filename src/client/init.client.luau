@@ -8,6 +8,7 @@ local pointsUpdate = ReplicatedStorage:WaitForChild("PointsUpdate") :: RemoteEve
 local levelUpRemote = ReplicatedStorage:WaitForChild("LevelUp") :: RemoteEvent
 local animalPicked = ReplicatedStorage:WaitForChild("AnimalPicked") :: RemoteEvent
 local playerDied = ReplicatedStorage:WaitForChild("PlayerDied") :: RemoteEvent
+local playerEaten = ReplicatedStorage:WaitForChild("PlayerEaten") :: RemoteEvent
 
 local playerGui = player:WaitForChild("PlayerGui")
 
@@ -277,6 +278,42 @@ local function showEvolutionPick(newLevel: number, choices: { AnimalChoice })
 	end
 end
 
+local function showEatMessage(text: string, textColor: Color3, duration: number)
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "EatMessage"
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 220
+	gui.IgnoreGuiInset = true
+	gui.Parent = playerGui
+
+	local msg = Instance.new("TextLabel")
+	msg.Name = "EatText"
+	msg.AnchorPoint = Vector2.new(0.5, 0.35)
+	msg.Position = UDim2.new(0.5, 0, 0.35, 0)
+	msg.Size = UDim2.fromOffset(900, 80)
+	msg.BackgroundTransparency = 1
+	msg.Font = Enum.Font.GothamBlack
+	msg.TextSize = 36
+	msg.TextColor3 = textColor
+	msg.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	msg.TextStrokeTransparency = 0.45
+	msg.TextTransparency = 0
+	msg.Text = text
+	msg.Parent = gui
+
+	local tween = TweenService:Create(
+		msg,
+		TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+		{ TextTransparency = 1, TextStrokeTransparency = 1 }
+	)
+	tween.Completed:Connect(function()
+		if gui.Parent then
+			gui:Destroy()
+		end
+	end)
+	tween:Play()
+end
+
 levelUpRemote.OnClientEvent:Connect(function(newLevel: number, choices: unknown?)
 	if typeof(newLevel) ~= "number" then
 		return
@@ -328,4 +365,16 @@ playerDied.OnClientEvent:Connect(function(_newLevel: number)
 		end
 	end)
 	tween:Play()
+end)
+
+playerEaten.OnClientEvent:Connect(function(mode: unknown, otherName: unknown, pointsAwarded: unknown?)
+	if mode == "eater" and typeof(otherName) == "string" and typeof(pointsAwarded) == "number" then
+		showEatMessage(
+			string.format("You ate %s! +%d points", otherName :: string, pointsAwarded :: number),
+			Color3.fromRGB(60, 210, 100),
+			2
+		)
+	elseif mode == "eaten" and typeof(otherName) == "string" then
+		showEatMessage(string.format("You were eaten by %s!", otherName :: string), Color3.fromRGB(220, 45, 45), 2)
+	end
 end)

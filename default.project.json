@@ -66,6 +66,15 @@
       },
       "RankedTimerSync": {
         "$className": "RemoteEvent"
+      },
+      "PlayerStartedGame": {
+        "$className": "RemoteEvent"
+      },
+      "GetPlayerStats": {
+        "$className": "RemoteFunction"
+      },
+      "GetLeaderboard": {
+        "$className": "RemoteFunction"
       }
     },
 

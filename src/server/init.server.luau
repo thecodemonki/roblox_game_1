@@ -48,6 +48,9 @@ local survivalStreakSync = ReplicatedStorage:WaitForChild("SurvivalStreakSync") 
 local roundEnd = ReplicatedStorage:WaitForChild("RoundEnd") :: RemoteEvent
 local voidBeastUnlocked = ReplicatedStorage:WaitForChild("VoidBeastUnlocked") :: RemoteEvent
 local rankedTimerSync = ReplicatedStorage:WaitForChild("RankedTimerSync") :: RemoteEvent
+local playerStartedGame = ReplicatedStorage:WaitForChild("PlayerStartedGame") :: RemoteEvent
+local getPlayerStats = ReplicatedStorage:WaitForChild("GetPlayerStats") :: RemoteFunction
+local getLeaderboard = ReplicatedStorage:WaitForChild("GetLeaderboard") :: RemoteFunction
 
 local Bots = require(script:WaitForChild("Bots"))
 local AnimalAppearance = require(script:WaitForChild("AnimalAppearance"))
@@ -100,6 +103,7 @@ end
 local MAP_SIZE = 400         -- half-width in studs (800x800 play area; matches Forest floor)
 local MAP_SURFACE_Y = 0      -- top of Workspace.Ground from MapSetup.server
 local DEFAULT_PLAYER_WALK_SPEED = 16
+local DEFAULT_PLAYER_JUMP_POWER = 50
 local POINTS_PER_FOOD = 1    -- points per pellet eaten
 local POINTS_PER_KILL = 15
 local BOT_MELEE_COOLDOWN = 1.5
@@ -213,6 +217,7 @@ local playerRankedPoints: { [Player]: number } = {}
 local playerRankedSurvivalAccum: { [Player]: number } = {}
 local playerRankedWinStreak: { [Player]: number } = {}
 local playerRankedWins: { [Player]: number } = {}
+local playerMenuUnlocked: { [Player]: boolean } = {}
 
 local SKINS_COMMON = {
 	"Golden Chicken",
@@ -1065,6 +1070,8 @@ local function loadData(player: Player)
 	else
 		print("New player " .. player.Name .. ", using defaults (load failed)")
 	end
+
+	playerMenuUnlocked[player] = false
 end
 
 local function saveData(player: Player)
@@ -1365,7 +1372,13 @@ local function onPlayerAdded(player)
 				end
 				playerRankedSurvivalAccum[player] = rAcc
 
-				hum.WalkSpeed = DEFAULT_PLAYER_WALK_SPEED
+				if playerMenuUnlocked[player] == true then
+					hum.WalkSpeed = DEFAULT_PLAYER_WALK_SPEED
+					hum.JumpPower = DEFAULT_PLAYER_JUMP_POWER
+				else
+					hum.WalkSpeed = 0
+					hum.JumpPower = 0
+				end
 
 				updateSurvivalCrownThrottled()
 			end
@@ -1425,6 +1438,7 @@ local function onPlayerRemoving(player)
 		hb:Disconnect()
 	end
 	playerHeartbeatConn[player] = nil
+	playerMenuUnlocked[player] = nil
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
@@ -1536,6 +1550,54 @@ purchaseChest.OnServerInvoke = function(player: Player, chestKind: unknown): boo
 		end
 	end)
 	return true
+end
+
+playerStartedGame.OnServerEvent:Connect(function(player: Player, rankedMode: unknown?)
+	if playerPoints[player] == nil then
+		return
+	end
+	playerMenuUnlocked[player] = true
+	player:SetAttribute("MenuRankedChoice", rankedMode == true)
+end)
+
+getPlayerStats.OnServerInvoke = function(player: Player)
+	if playerPoints[player] == nil then
+		return {}
+	end
+	local pts = playerPoints[player] or 0
+	return {
+		level = getLevelFromPoints(pts),
+		animal = playerAnimal[player] or "—",
+		killTitle = playerTitle[player] or titleFromKills(playerKills[player] or 0),
+		kills = playerKills[player] or 0,
+		coins = playerCoins[player] or 0,
+		points = pts,
+	}
+end
+
+getLeaderboard.OnServerInvoke = function(_player: Player)
+	local rows: { { userId: number, name: string, killTitle: string, kills: number } } = {}
+	for _, plr in Players:GetPlayers() do
+		if playerKills[plr] ~= nil then
+			table.insert(rows, {
+				userId = plr.UserId,
+				name = plr.Name,
+				killTitle = playerTitle[plr] or titleFromKills(playerKills[plr] or 0),
+				kills = playerKills[plr] or 0,
+			})
+		end
+	end
+	table.sort(rows, function(a, b)
+		if a.kills ~= b.kills then
+			return a.kills > b.kills
+		end
+		return a.userId < b.userId
+	end)
+	local out = {}
+	for i = 1, math.min(5, #rows) do
+		out[i] = rows[i]
+	end
+	return out
 end
 
 lastRankedRoundIndex = math.floor((tick() - rankedRoundStart) / RANKED_ROUND_SEC)

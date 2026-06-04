@@ -6,6 +6,22 @@ print("Server script loaded successfully")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local DataStoreService = game:GetService("DataStoreService")
+-- Studio: enable Game Settings → Security → "Enable Studio Access to API Services" to test DataStores in Play.
+local playerDataStore = DataStoreService:GetDataStore("EvolvePlayerData_v1")
+
+local DEFAULT_DATA = {
+	level = 1,
+	points = 0,
+	kills = 0,
+	killTitle = "Fresh Prey",
+	coins = 0,
+	skins = {},
+	totalPlaytime = 0,
+	rankedWins = 0,
+	rankedWinStreak = 0,
+	currentAnimal = "Noob Chicken",
+}
 
 print("[Server] init.server.luau starting (Evolve game)")
 
@@ -196,6 +212,7 @@ local lastRankedRoundIndex = 0
 local playerRankedPoints: { [Player]: number } = {}
 local playerRankedSurvivalAccum: { [Player]: number } = {}
 local playerRankedWinStreak: { [Player]: number } = {}
+local playerRankedWins: { [Player]: number } = {}
 
 local SKINS_COMMON = {
 	"Golden Chicken",
@@ -797,6 +814,7 @@ local function endRankedRound()
 		local r = rows[i]
 		local rewardLabel: string
 		if i == 1 then
+			playerRankedWins[r.p] = (playerRankedWins[r.p] or 0) + 1
 			rewardLabel = "Epic chest + 50 coins"
 			local sn, rr = rollPlaytimeEpicChest()
 			grantSkinFromRoll(r.p, sn, rr)
@@ -907,6 +925,175 @@ local function checkKillTitles(player: Player, oldKills: number, newKills: numbe
 	local t = titleFromKills(newKills)
 	playerTitle[player] = t
 	titleSync:FireClient(player, t)
+end
+
+local function datastoreKeyForPlayer(player: Player): string
+	return "u_" .. tostring(player.UserId)
+end
+
+local function cloneSkinInventory(raw: any): { [string]: { level: number, rarity: string } }
+	local out: { [string]: { level: number, rarity: string } } = {}
+	if typeof(raw) ~= "table" then
+		return out
+	end
+	for skinName, entry in pairs(raw :: { [any]: any }) do
+		if typeof(skinName) == "string" and typeof(entry) == "table" then
+			local e = entry :: { [string]: any }
+			local lv = e.level
+			local rr = e.rarity
+			if typeof(lv) == "number" and typeof(rr) == "string" then
+				out[skinName] = {
+					level = math.clamp(math.floor(lv), 1, SKIN_MAX_LEVEL),
+					rarity = rr,
+				}
+			end
+		end
+	end
+	return out
+end
+
+local function cloneMilestones(raw: any): { [string]: boolean }
+	local out: { [string]: boolean } = {}
+	if typeof(raw) ~= "table" then
+		return out
+	end
+	for k, v in pairs(raw :: { [any]: any }) do
+		if typeof(k) == "string" and v == true then
+			out[k] = true
+		end
+	end
+	return out
+end
+
+local function mergeProfileFromStore(raw: any): { [string]: any }
+	local merged: { [string]: any } = {
+		level = DEFAULT_DATA.level,
+		points = DEFAULT_DATA.points,
+		kills = DEFAULT_DATA.kills,
+		killTitle = DEFAULT_DATA.killTitle,
+		coins = DEFAULT_DATA.coins,
+		skins = {},
+		totalPlaytime = DEFAULT_DATA.totalPlaytime,
+		rankedWins = DEFAULT_DATA.rankedWins,
+		rankedWinStreak = DEFAULT_DATA.rankedWinStreak,
+		currentAnimal = DEFAULT_DATA.currentAnimal,
+		voidApex = false,
+		playtimeMilestones = {},
+	}
+	if typeof(raw) == "table" then
+		local t = raw :: { [string]: any }
+		if typeof(t.points) == "number" and t.points == t.points and t.points >= 0 then
+			merged.points = math.min(math.floor(t.points), 1_000_000)
+		end
+		if typeof(t.kills) == "number" and t.kills == t.kills and t.kills >= 0 then
+			merged.kills = math.min(math.floor(t.kills), 100_000)
+		end
+		if typeof(t.coins) == "number" and t.coins == t.coins and t.coins >= 0 then
+			merged.coins = math.min(math.floor(t.coins), 10_000_000)
+		end
+		if typeof(t.totalPlaytime) == "number" and t.totalPlaytime == t.totalPlaytime and t.totalPlaytime >= 0 then
+			merged.totalPlaytime = math.min(t.totalPlaytime, 1e8)
+		end
+		if typeof(t.rankedWins) == "number" and t.rankedWins == t.rankedWins and t.rankedWins >= 0 then
+			merged.rankedWins = math.min(math.floor(t.rankedWins), 100_000)
+		end
+		if typeof(t.rankedWinStreak) == "number" and t.rankedWinStreak == t.rankedWinStreak and t.rankedWinStreak >= 0 then
+			merged.rankedWinStreak = math.min(math.floor(t.rankedWinStreak), 10_000)
+		end
+		merged.skins = cloneSkinInventory(t.skins)
+		if t.voidApex == true then
+			merged.voidApex = true
+		end
+		merged.playtimeMilestones = cloneMilestones(t.playtimeMilestones)
+	end
+	merged.level = getLevelFromPoints(merged.points :: number)
+	local lv = merged.level :: number
+	local animalName = merged.currentAnimal
+	if typeof(raw) == "table" then
+		local t = raw :: { [string]: any }
+		if typeof(t.currentAnimal) == "string" then
+			animalName = t.currentAnimal
+		end
+	end
+	if typeof(animalName) ~= "string" then
+		animalName = DEFAULT_DATA.currentAnimal
+	end
+	if not AnimalPools.isAnimalAllowedAtLevel(animalName :: string, lv) then
+		animalName = AnimalPools.getDefaultAnimalNameForLevel(lv)
+	end
+	merged.currentAnimal = animalName
+	merged.killTitle = titleFromKills(merged.kills :: number)
+	return merged
+end
+
+local function loadData(player: Player)
+	local key = datastoreKeyForPlayer(player)
+	local ok, raw = pcall(function()
+		return playerDataStore:GetAsync(key)
+	end)
+	local hadStored = ok and typeof(raw) == "table"
+	if not ok then
+		warn("[DataStore] GetAsync failed for " .. player.Name .. ": ", raw)
+	end
+	local data = mergeProfileFromStore(if hadStored then raw else nil)
+
+	playerPoints[player] = data.points
+	playerLevel[player] = data.level
+	playerKills[player] = data.kills
+	playerTitle[player] = data.killTitle
+	playerCoins[player] = data.coins
+	playerSkins[player] = cloneSkinInventory(data.skins)
+	playerSessionPlaytimeTotal[player] = data.totalPlaytime
+	playerRankedWins[player] = data.rankedWins
+	playerRankedWinStreak[player] = data.rankedWinStreak
+	playerAnimal[player] = data.currentAnimal
+	playerHasVoidApex[player] = data.voidApex == true
+	playerPlaytimeMilestonesDone[player] = cloneMilestones(data.playtimeMilestones)
+
+	playerLastAttack[player] = 0
+	playerPlaytimeAccumSec[player] = 0
+	playerSurvivalSec[player] = 0
+	playerLastSurvivalStreakSync[player] = 0
+	playerRankedPoints[player] = 0
+	playerRankedSurvivalAccum[player] = 0
+	pendingEvolution[player] = nil
+
+	if hadStored then
+		print("Loaded data for " .. player.Name)
+	elseif ok then
+		print("New player " .. player.Name .. ", using defaults")
+	else
+		print("New player " .. player.Name .. ", using defaults (load failed)")
+	end
+end
+
+local function saveData(player: Player)
+	if playerPoints[player] == nil then
+		return
+	end
+	local key = datastoreKeyForPlayer(player)
+	local blob: { [string]: any } = {
+		points = playerPoints[player],
+		level = getLevelFromPoints(playerPoints[player] :: number),
+		kills = playerKills[player] or 0,
+		killTitle = playerTitle[player] or titleFromKills(playerKills[player] or 0),
+		coins = playerCoins[player] or 0,
+		skins = cloneSkinInventory(playerSkins[player] or {}),
+		totalPlaytime = playerSessionPlaytimeTotal[player] or 0,
+		rankedWins = playerRankedWins[player] or 0,
+		rankedWinStreak = playerRankedWinStreak[player] or 0,
+		currentAnimal = playerAnimal[player] or DEFAULT_DATA.currentAnimal,
+		voidApex = playerHasVoidApex[player] == true,
+		playtimeMilestones = cloneMilestones(playerPlaytimeMilestonesDone[player] or {}),
+	}
+	local ok, err = pcall(function()
+		playerDataStore:SetAsync(key, blob)
+	end)
+	if ok then
+		print("Saved data for " .. player.Name)
+	else
+		warn("[DataStore] SetAsync failed for " .. player.Name .. ": ", err)
+	end
 end
 
 local function getNearestPlayerRoot(fromPos: Vector3, maxDist: number): (Player?, BasePart?)
@@ -1101,32 +1288,19 @@ end
 
 -- Setup player when they join
 local function onPlayerAdded(player)
-	playerPoints[player] = 0
-	playerLevel[player] = 1
-	playerKills[player] = 0
-	playerLastAttack[player] = 0
-	playerTitle[player] = titleFromKills(0)
-	playerSkins[player] = {}
-	playerCoins[player] = 0
-	playerPlaytimeAccumSec[player] = 0
-	playerSessionPlaytimeTotal[player] = 0
-	playerPlaytimeMilestonesDone[player] = {}
-	playerSurvivalSec[player] = 0
-	playerLastSurvivalStreakSync[player] = 0
-	playerRankedPoints[player] = 0
-	playerRankedSurvivalAccum[player] = 0
-	playerRankedWinStreak[player] = 0
-	print(player.Name .. " joined. Points: 0")
-	playerHasVoidApex[player] = false
-	pointsUpdate:FireClient(player, 0, 1)
+	loadData(player)
+
+	local pts = playerPoints[player] or 0
+	local lv = playerLevel[player] or 1
+	print(player.Name .. " joined. Points: " .. tostring(pts))
+	pointsUpdate:FireClient(player, pts, lv)
 	titleSync:FireClient(player, playerTitle[player] :: string)
 	syncSkinInventory(player)
-	coinsUpdated:FireClient(player, 0)
+	coinsUpdated:FireClient(player, playerCoins[player] or 0)
 	survivalStreakSync:FireClient(player, 0)
 	rankedTimerSync:FireClient(player, getRankedTimeRemainingSec())
 
-	-- When character spawns
-	player.CharacterAdded:Connect(function(character)
+	local function onCharacterAdded(character: Model)
 		if pendingEvolution[player] then
 			task.defer(function()
 				addPickShield(player)
@@ -1207,11 +1381,17 @@ local function onPlayerAdded(player)
 		task.defer(function()
 			applyStoredAnimalLook(player, character)
 		end)
-	end)
+	end
+
+	player.CharacterAdded:Connect(onCharacterAdded)
+	if player.Character then
+		task.defer(onCharacterAdded, player.Character)
+	end
 end
 
 -- Cleanup when player leaves
 local function onPlayerRemoving(player)
+	saveData(player)
 	playerPoints[player] = nil
 	playerLevel[player] = nil
 	pendingEvolution[player] = nil
@@ -1231,6 +1411,7 @@ local function onPlayerRemoving(player)
 	playerRankedPoints[player] = nil
 	playerRankedSurvivalAccum[player] = nil
 	playerRankedWinStreak[player] = nil
+	playerRankedWins[player] = nil
 	if crownLeader == player then
 		local ch = player.Character
 		if ch then
@@ -1248,6 +1429,22 @@ end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
 Players.PlayerRemoving:Connect(onPlayerRemoving)
+
+task.spawn(function()
+	while true do
+		task.wait(300)
+		for _, plr in ipairs(Players:GetPlayers()) do
+			saveData(plr)
+		end
+	end
+end)
+
+game:BindToClose(function()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		saveData(plr)
+	end
+	task.wait(2)
+end)
 
 attackRequest.OnServerEvent:Connect(function(player: Player)
 	tryMeleeAttack(player)

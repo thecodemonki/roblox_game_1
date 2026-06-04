@@ -155,6 +155,47 @@ local function tickOneBot(model: Model, rec, dt: number, c: BotConfig)
 	rec.nextThink = PATH_THINK_INTERVAL
 
 	local pos = root.Position
+
+	local fleeUntil = model:GetAttribute("AbilityFleeUntil")
+	if typeof(fleeUntil) == "number" and tick() < (fleeUntil :: number) then
+		local uid = model:GetAttribute("AbilityFleeSourceUserId")
+		local fleeFrom: Vector3? = nil
+		if typeof(uid) == "number" then
+			local plr = Players:GetPlayerByUserId(uid :: number)
+			local ch = plr and plr.Character
+			local r = ch and ch:FindFirstChild("HumanoidRootPart") :: BasePart?
+			if r then
+				fleeFrom = r.Position
+			end
+		end
+		local goalFlee: Vector3
+		if fleeFrom then
+			local away = pos - fleeFrom
+			local flat = Vector3.new(away.X, 0, away.Z)
+			if flat.Magnitude > 0.1 then
+				goalFlee = pos + flat.Unit * 35
+			else
+				goalFlee = pos + Vector3.new(1, 0, 0).Unit * 35
+			end
+		else
+			goalFlee = randomGroundGoal(c.mapHalf)
+		end
+		goalFlee = Vector3.new(
+			math.clamp(goalFlee.X, -c.mapHalf, c.mapHalf),
+			goalFlee.Y,
+			math.clamp(goalFlee.Z, -c.mapHalf, c.mapHalf)
+		)
+		rec.waypoints = computePathWaypoints(pos, goalFlee)
+		rec.wpIndex = 1
+		if #rec.waypoints > 0 then
+			local targetWp = rec.waypoints[math.min(2, #rec.waypoints)]
+			hum:MoveTo(targetWp)
+		end
+		local dmg = DAMAGE_BY_KIND[rec.kind] or 5
+		c.tryBotMelee(model, dmg)
+		return
+	end
+
 	local nearestRootFlee = select(2, c.getNearestPlayerRoot(pos, FLEE_RANGE))
 	local nearestRootHunter = select(2, c.getNearestPlayerRoot(pos, HUNTER_CHASE_RANGE))
 

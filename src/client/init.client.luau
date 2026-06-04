@@ -50,8 +50,190 @@ local rankedTimerSync = ReplicatedStorage:WaitForChild("RankedTimerSync") :: Rem
 local playerStartedGame = ReplicatedStorage:WaitForChild("PlayerStartedGame") :: RemoteEvent
 local getPlayerStatsRemote = ReplicatedStorage:WaitForChild("GetPlayerStats") :: RemoteFunction
 local getLeaderboardRemote = ReplicatedStorage:WaitForChild("GetLeaderboard") :: RemoteFunction
+local useAbility = ReplicatedStorage:WaitForChild("UseAbility") :: RemoteEvent
+local abilityFeedback = ReplicatedStorage:WaitForChild("AbilityFeedback") :: RemoteEvent
 
 local playerGui = player:WaitForChild("PlayerGui")
+
+local ABILITY_NAME_BY_ANIMAL: { [string]: string } = {
+	["Noob Chicken"] = "Cluck",
+	["Rat"] = "Scurry",
+	["Fox"] = "Dash",
+	["Cobra"] = "Venom Spit",
+	["Wolf"] = "Howl",
+	["Gorilla"] = "Rock Throw",
+	["T-Rex"] = "Stomp",
+}
+
+local currentAnimalForAbility = "Noob Chicken"
+local abilityCooldownEnd = 0.0
+local abilityCooldownTotal = 15.0
+
+local abilityHudGui = Instance.new("ScreenGui")
+abilityHudGui.Name = "AbilityHud"
+abilityHudGui.ResetOnSpawn = false
+abilityHudGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+abilityHudGui.DisplayOrder = 25
+abilityHudGui.Parent = playerGui
+
+local abilityHudRoot = Instance.new("Frame")
+abilityHudRoot.Name = "Root"
+abilityHudRoot.AnchorPoint = Vector2.new(0.5, 1)
+abilityHudRoot.Position = UDim2.new(0.5, 0, 1, -24)
+abilityHudRoot.Size = UDim2.fromOffset(280, 72)
+abilityHudRoot.BackgroundTransparency = 1
+abilityHudRoot.Parent = abilityHudGui
+
+local abilityNameLabel = Instance.new("TextLabel")
+abilityNameLabel.Name = "AbilityName"
+abilityNameLabel.Size = UDim2.new(1, 0, 0, 18)
+abilityNameLabel.Position = UDim2.new(0, 0, 0, 0)
+abilityNameLabel.BackgroundTransparency = 1
+abilityNameLabel.Font = Enum.Font.GothamBold
+abilityNameLabel.TextSize = 14
+abilityNameLabel.TextColor3 = Color3.fromRGB(230, 230, 240)
+abilityNameLabel.Text = "Ability"
+abilityNameLabel.Parent = abilityHudRoot
+
+local abilityBarBg = Instance.new("Frame")
+abilityBarBg.Name = "CooldownBarBg"
+abilityBarBg.Size = UDim2.new(1, 0, 0, 14)
+abilityBarBg.Position = UDim2.new(0, 0, 0, 22)
+abilityBarBg.BackgroundColor3 = Color3.fromRGB(55, 58, 72)
+abilityBarBg.BorderSizePixel = 0
+abilityBarBg.Parent = abilityHudRoot
+
+local barCorner = Instance.new("UICorner")
+barCorner.CornerRadius = UDim.new(0, 6)
+barCorner.Parent = abilityBarBg
+
+local abilityBarFill = Instance.new("Frame")
+abilityBarFill.Name = "Fill"
+abilityBarFill.Size = UDim2.new(1, 0, 1, 0)
+abilityBarFill.BackgroundColor3 = Color3.fromRGB(90, 200, 120)
+abilityBarFill.BorderSizePixel = 0
+abilityBarFill.Parent = abilityBarBg
+
+local fillCorner = Instance.new("UICorner")
+fillCorner.CornerRadius = UDim.new(0, 6)
+fillCorner.Parent = abilityBarFill
+
+local abilityMobileBtn = Instance.new("TextButton")
+abilityMobileBtn.Name = "AbilityMobileButton"
+abilityMobileBtn.AnchorPoint = Vector2.new(0.5, 1)
+abilityMobileBtn.Position = UDim2.new(0.5, 0, 1, -100)
+abilityMobileBtn.Size = UDim2.fromOffset(56, 56)
+abilityMobileBtn.BackgroundColor3 = Color3.fromRGB(48, 52, 70)
+abilityMobileBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+abilityMobileBtn.Font = Enum.Font.GothamBold
+abilityMobileBtn.TextSize = 11
+abilityMobileBtn.Text = "Q"
+abilityMobileBtn.AutoButtonColor = true
+abilityMobileBtn.Visible = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+abilityMobileBtn.Parent = abilityHudGui
+
+local mobCorner = Instance.new("UICorner")
+mobCorner.CornerRadius = UDim.new(1, 0)
+mobCorner.Parent = abilityMobileBtn
+
+local function refreshAbilityHudTitle()
+	local n = ABILITY_NAME_BY_ANIMAL[currentAnimalForAbility]
+	abilityNameLabel.Text = if n then n else "Ability"
+	if abilityMobileBtn.Visible then
+		abilityMobileBtn.Text = if n then string.sub(n, 1, 6) else "Q"
+	end
+end
+
+local abilityPopup = Instance.new("TextLabel")
+abilityPopup.Name = "AbilityPopup"
+abilityPopup.AnchorPoint = Vector2.new(0.5, 0.5)
+abilityPopup.Position = UDim2.new(0.5, 0, 0.42, 0)
+abilityPopup.Size = UDim2.fromOffset(400, 48)
+abilityPopup.BackgroundColor3 = Color3.fromRGB(20, 22, 32)
+abilityPopup.BackgroundTransparency = 0.2
+abilityPopup.Font = Enum.Font.GothamBlack
+abilityPopup.TextSize = 22
+abilityPopup.TextColor3 = Color3.fromRGB(255, 220, 120)
+abilityPopup.Text = ""
+abilityPopup.Visible = false
+abilityPopup.ZIndex = 10
+abilityPopup.Parent = abilityHudGui
+
+local popStroke = Instance.new("UIStroke")
+popStroke.Thickness = 2
+popStroke.Color = Color3.fromRGB(200, 160, 80)
+popStroke.Parent = abilityPopup
+
+local popCorner = Instance.new("UICorner")
+popCorner.CornerRadius = UDim.new(0, 10)
+popCorner.Parent = abilityPopup
+
+local function showAbilityPopup(text: string)
+	abilityPopup.Text = text
+	abilityPopup.Visible = true
+	task.delay(1.1, function()
+		abilityPopup.Visible = false
+	end)
+end
+
+RunService.RenderStepped:Connect(function()
+	local now = tick()
+	local ready = now >= abilityCooldownEnd
+	if ready then
+		abilityBarFill.Size = UDim2.new(1, 0, 1, 0)
+		abilityBarBg.BackgroundColor3 = Color3.fromRGB(55, 58, 72)
+		abilityBarFill.BackgroundColor3 = Color3.fromRGB(90, 200, 120)
+	else
+		local rem = abilityCooldownEnd - now
+		local p = if abilityCooldownTotal > 0 then math.clamp(1 - rem / abilityCooldownTotal, 0, 1) else 1
+		abilityBarFill.Size = UDim2.new(p, 0, 1, 0)
+		abilityBarBg.BackgroundColor3 = Color3.fromRGB(42, 44, 54)
+		abilityBarFill.BackgroundColor3 = Color3.fromRGB(100, 105, 120)
+	end
+end)
+
+abilityFeedback.OnClientEvent:Connect(function(ok: unknown, abilityName: unknown, cooldownTotal: unknown, remainingFail: unknown)
+	local okB = ok == true
+	local nameStr = if typeof(abilityName) == "string" then abilityName :: string else ""
+	local cdNum = if typeof(cooldownTotal) == "number" then cooldownTotal :: number else 15
+	local remNum = if typeof(remainingFail) == "number" then remainingFail :: number else 0
+	if okB and nameStr ~= "" then
+		abilityCooldownTotal = cdNum
+		abilityCooldownEnd = tick() + cdNum
+		showAbilityPopup(nameStr)
+	elseif remNum > 0 then
+		abilityCooldownTotal = cdNum
+		abilityCooldownEnd = tick() + remNum
+	elseif nameStr == "No ability" then
+		showAbilityPopup("No ability")
+	end
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed: boolean)
+	if gameProcessed then
+		return
+	end
+	local mm = playerGui:FindFirstChild("MainMenu")
+	if mm and mm:IsA("ScreenGui") and (mm :: ScreenGui).Enabled then
+		return
+	end
+	if UserInputService:GetFocusedTextBox() ~= nil then
+		return
+	end
+	if input.KeyCode == Enum.KeyCode.Q then
+		useAbility:FireServer()
+	end
+end)
+
+abilityMobileBtn.MouseButton1Click:Connect(function()
+	local mm = playerGui:FindFirstChild("MainMenu")
+	if mm and mm:IsA("ScreenGui") and (mm :: ScreenGui).Enabled then
+		return
+	end
+	useAbility:FireServer()
+end)
+
+refreshAbilityHudTitle()
 
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "PointsHud"
@@ -1229,6 +1411,7 @@ mainMenuGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 mainMenuGui.DisplayOrder = MAIN_MENU_DISPLAY_ORDER
 mainMenuGui.IgnoreGuiInset = true
 mainMenuGui.Parent = playerGui
+abilityHudGui.Enabled = false
 
 local menuRoot = Instance.new("Frame")
 menuRoot.Name = "Root"
@@ -1639,6 +1822,7 @@ local function startGameFromMenu(rankedMode: boolean)
 		invOpen = false
 		invPanel.Visible = false
 		mainMenuGui.Enabled = false
+		abilityHudGui.Enabled = true
 		if flashGui.Parent then
 			flashGui:Destroy()
 		end
@@ -1922,6 +2106,8 @@ local function showEvolutionPick(newLevel: number, choices: { AnimalChoice })
 			end
 			picked = true
 			minimapAnimalLabel.Text = animal.name
+			currentAnimalForAbility = animal.name
+			refreshAbilityHudTitle()
 			animalPicked:FireServer(animal.name)
 			task.defer(function()
 				animalChanged:FireServer(animal.name)
@@ -1988,6 +2174,8 @@ playerDied.OnClientEvent:Connect(function(_newLevel: number, defaultAnimal: unkn
 	clearPickBlur()
 	if typeof(defaultAnimal) == "string" then
 		minimapAnimalLabel.Text = defaultAnimal :: string
+		currentAnimalForAbility = defaultAnimal :: string
+		refreshAbilityHudTitle()
 	end
 	local deathGui = Instance.new("ScreenGui")
 	deathGui.Name = "DeathScreen"

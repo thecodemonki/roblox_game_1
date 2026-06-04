@@ -51,6 +51,8 @@ local rankedTimerSync = ReplicatedStorage:WaitForChild("RankedTimerSync") :: Rem
 local playerStartedGame = ReplicatedStorage:WaitForChild("PlayerStartedGame") :: RemoteEvent
 local getPlayerStats = ReplicatedStorage:WaitForChild("GetPlayerStats") :: RemoteFunction
 local getLeaderboard = ReplicatedStorage:WaitForChild("GetLeaderboard") :: RemoteFunction
+local useAbility = ReplicatedStorage:WaitForChild("UseAbility") :: RemoteEvent
+local abilityFeedback = ReplicatedStorage:WaitForChild("AbilityFeedback") :: RemoteEvent
 
 local Bots = require(script:WaitForChild("Bots"))
 local AnimalAppearance = require(script:WaitForChild("AnimalAppearance"))
@@ -218,6 +220,10 @@ local playerRankedSurvivalAccum: { [Player]: number } = {}
 local playerRankedWinStreak: { [Player]: number } = {}
 local playerRankedWins: { [Player]: number } = {}
 local playerMenuUnlocked: { [Player]: boolean } = {}
+local playerAbilityNextReadyAt: { [Player]: number } = {}
+local playerScurryUntil: { [Player]: number } = {}
+local playerPoisonUntil: { [Player]: number } = {}
+local playerPoisonTickAccum: { [Player]: number } = {}
 
 local SKINS_COMMON = {
 	"Golden Chicken",
@@ -1125,6 +1131,355 @@ local function getNearestPlayerRoot(fromPos: Vector3, maxDist: number): (Player?
 	return bestP, bestR
 end
 
+local abilityProjFolder = workspace:FindFirstChild("AbilityProjectiles")
+if not abilityProjFolder then
+	abilityProjFolder = Instance.new("Folder")
+	abilityProjFolder.Name = "AbilityProjectiles"
+	abilityProjFolder.Parent = workspace
+end
+
+local function getAbilityCooldownSecondsForTier(tier: number): number
+	if tier <= 1 then
+		return 15
+	elseif tier == 2 then
+		return 12
+	elseif tier == 3 then
+		return 10
+	elseif tier == 4 then
+		return 8
+	else
+		return 6
+	end
+end
+
+local function fireAbilityFeedback(player: Player, ok: boolean, abilityName: string, cooldownTotal: number, remainingOnFail: number)
+	abilityFeedback:FireClient(player, ok, abilityName, cooldownTotal, remainingOnFail)
+end
+
+local function knockbackFlat(root: BasePart, fromPos: Vector3, strength: number)
+	local away = root.Position - fromPos
+	local flat = Vector3.new(away.X, 0, away.Z)
+	if flat.Magnitude < 0.01 then
+		flat = Vector3.new(0, 0, 1)
+	end
+	local mass = root.AssemblyMass
+	if mass < 1 then
+		mass = 1
+	end
+	root:ApplyImpulse(flat.Unit * strength * mass)
+end
+
+local function tryDamagePlayerHumanoid(attacker: Player?, victim: Player, damage: number): boolean
+	local ch = victim.Character
+	if not ch then
+		return false
+	end
+	local hum = ch:FindFirstChildOfClass("Humanoid")
+	local rootP = ch:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not hum or not rootP or hum.Health <= 0 then
+		return false
+	end
+	local now = workspace:GetServerTimeNow()
+	local pac = victim:GetAttribute("PacifistUntil")
+	if typeof(pac) == "number" and now < pac then
+		return false
+	end
+	local newHealth = hum.Health - damage
+	flashCombatHit(ch)
+	showFloatingDamage(rootP, damage)
+	if newHealth <= 0 then
+		if attacker and attacker ~= victim and playerPoints[attacker] ~= nil then
+			onPlayerKill(attacker, victim)
+		end
+		hum.Health = 0
+		return true
+	else
+		hum.Health = newHealth
+		return false
+	end
+end
+
+local function damageBotFromPlayer(attacker: Player, botModel: Model, damage: number)
+	local humB = botModel:FindFirstChildOfClass("Humanoid")
+	local rootB = botModel:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not humB or not rootB or humB.Health <= 0 then
+		return
+	end
+	local newHealth = humB.Health - damage
+	flashCombatHit(botModel)
+	showFloatingDamage(rootB, damage)
+	if newHealth <= 0 then
+		local dn = botModel:GetAttribute("DisplayBotName")
+		local displayName = if typeof(dn) == "string" then dn :: string else botModel.Name
+		grantBotKill(attacker, displayName)
+		humB.Health = 0
+	else
+		humB.Health = newHealth
+	end
+end
+
+local function abilityCluck(caster: Player, character: Model)
+	local root = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not root then
+		return
+	end
+	local origin = root.Position
+	for _, plr in Players:GetPlayers() do
+		if plr == caster or playerPoints[plr] == nil then
+			continue
+		end
+		local ch = plr.Character
+		local r = ch and ch:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local h = ch and ch:FindFirstChildOfClass("Humanoid")
+		if r and h and h.Health > 0 and (r.Position - origin).Magnitude <= 10 then
+			knockbackFlat(r, origin, 18)
+		end
+	end
+end
+
+local function abilityScurry(player: Player)
+	playerScurryUntil[player] = tick() + 3
+end
+
+local function abilityFoxDash(character: Model)
+	local root = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not root then
+		return
+	end
+	local look = root.CFrame.LookVector
+	local flat = Vector3.new(look.X, 0, look.Z)
+	if flat.Magnitude < 0.01 then
+		flat = Vector3.new(0, 0, -1)
+	else
+		flat = flat.Unit
+	end
+	local newPos = root.Position + flat * 20
+	newPos = Vector3.new(math.clamp(newPos.X, -MAP_SIZE, MAP_SIZE), root.Position.Y, math.clamp(newPos.Z, -MAP_SIZE, MAP_SIZE))
+	root.CFrame = CFrame.new(newPos, newPos + flat)
+	root.AssemblyLinearVelocity = Vector3.zero
+end
+
+local function spawnPoisonProjectile(caster: Player, character: Model)
+	local root = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not root then
+		return
+	end
+	local dir = root.CFrame.LookVector
+	local flat = Vector3.new(dir.X, 0, dir.Z)
+	if flat.Magnitude < 0.01 then
+		flat = Vector3.new(0, 0, -1)
+	else
+		flat = flat.Unit
+	end
+	local p = Instance.new("Part")
+	p.Name = "VenomSpit"
+	p.Size = Vector3.new(0.6, 0.6, 0.6)
+	p.Shape = Enum.PartType.Ball
+	p.Material = Enum.Material.Neon
+	p.Color = Color3.fromRGB(80, 200, 90)
+	p.CanCollide = false
+	p.CanQuery = true
+	p.Massless = false
+	p.Anchored = false
+	p.Position = root.Position + Vector3.new(0, 2, 0) + flat * 2
+	p.Parent = abilityProjFolder
+	p.AssemblyLinearVelocity = flat * 95
+
+	local hit = false
+	local conn: RBXScriptConnection? = nil
+	local function cleanup()
+		if conn then
+			conn:Disconnect()
+			conn = nil
+		end
+		if p.Parent then
+			p:Destroy()
+		end
+	end
+	conn = p.Touched:Connect(function(other: BasePart)
+		if hit or not p.Parent then
+			return
+		end
+		local model = other:FindFirstAncestorOfClass("Model")
+		if not model or model == character then
+			return
+		end
+		local plr = Players:GetPlayerFromCharacter(model)
+		if not plr or plr == caster or playerPoints[plr] == nil then
+			return
+		end
+		local hum = model:FindFirstChildOfClass("Humanoid")
+		if not hum or hum.Health <= 0 then
+			return
+		end
+		hit = true
+		playerPoisonUntil[plr] = tick() + 5
+		playerPoisonTickAccum[plr] = 0
+		cleanup()
+	end)
+	task.delay(5, cleanup)
+end
+
+local function spawnRockProjectile(caster: Player, character: Model)
+	local root = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not root then
+		return
+	end
+	local dir = root.CFrame.LookVector
+	local flat = Vector3.new(dir.X, 0, dir.Z)
+	if flat.Magnitude < 0.01 then
+		flat = Vector3.new(0, 0, -1)
+	else
+		flat = flat.Unit
+	end
+	local p = Instance.new("Part")
+	p.Name = "RockThrow"
+	p.Size = Vector3.new(2.2, 2.2, 2.2)
+	p.Material = Enum.Material.Slate
+	p.Color = Color3.fromRGB(90, 88, 85)
+	p.CanCollide = false
+	p.CanQuery = true
+	p.Anchored = false
+	p.Position = root.Position + Vector3.new(0, 3, 0) + flat * 3
+	p.Parent = abilityProjFolder
+	p.AssemblyLinearVelocity = flat * 55
+
+	local hit = false
+	local conn: RBXScriptConnection? = nil
+	local function cleanup()
+		if conn then
+			conn:Disconnect()
+			conn = nil
+		end
+		if p.Parent then
+			p:Destroy()
+		end
+	end
+	conn = p.Touched:Connect(function(other: BasePart)
+		if hit or not p.Parent then
+			return
+		end
+		local model = other:FindFirstAncestorOfClass("Model")
+		if not model or model == character then
+			return
+		end
+		local plr = Players:GetPlayerFromCharacter(model)
+		if plr and playerPoints[plr] ~= nil then
+			hit = true
+			tryDamagePlayerHumanoid(caster, plr, 40)
+			cleanup()
+			return
+		end
+		if model:GetAttribute("EvolveBot") == true then
+			hit = true
+			damageBotFromPlayer(caster, model, 40)
+			cleanup()
+		end
+	end)
+	task.delay(6, cleanup)
+end
+
+local function abilityWolfHowl(caster: Player, character: Model)
+	local root = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not root then
+		return
+	end
+	local tEnd = tick() + 5
+	for _, botModel in ipairs(Bots.iterBotModels()) do
+		local br = botModel:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if br and (br.Position - root.Position).Magnitude <= 30 then
+			botModel:SetAttribute("AbilityFleeUntil", tEnd)
+			botModel:SetAttribute("AbilityFleeSourceUserId", caster.UserId)
+		end
+	end
+end
+
+local function abilityTRexStomp(caster: Player, character: Model)
+	local root = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+	if not root then
+		return
+	end
+	local origin = root.Position
+	for _, plr in Players:GetPlayers() do
+		if plr == caster or playerPoints[plr] == nil then
+			continue
+		end
+		local ch = plr.Character
+		local r = ch and ch:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local h = ch and ch:FindFirstChildOfClass("Humanoid")
+		if r and h and h.Health > 0 and (r.Position - origin).Magnitude <= 15 then
+			tryDamagePlayerHumanoid(caster, plr, 50)
+			if r.Parent then
+				knockbackFlat(r, origin, 45)
+			end
+		end
+	end
+	for _, botModel in ipairs(Bots.iterBotModels()) do
+		local br = botModel:FindFirstChild("HumanoidRootPart") :: BasePart?
+		local humB = botModel:FindFirstChildOfClass("Humanoid")
+		if br and humB and humB.Health > 0 and (br.Position - origin).Magnitude <= 15 then
+			damageBotFromPlayer(caster, botModel, 50)
+			if br.Parent then
+				knockbackFlat(br, origin, 45)
+			end
+		end
+	end
+end
+
+local function tryExecutePlayerAbility(player: Player): (boolean, string, number, number)
+	local animal = playerAnimal[player]
+	local cdDefault = 15
+	if not animal or typeof(animal) ~= "string" then
+		return false, "No ability", cdDefault, 0
+	end
+	local character = player.Character
+	if not character then
+		return false, "No ability", cdDefault, 0
+	end
+	local hum = character:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then
+		return false, "No ability", cdDefault, 0
+	end
+
+	local tier = AnimalPools.getTierForAnimalName(animal :: string)
+	local cd = if tier then getAbilityCooldownSecondsForTier(tier) else cdDefault
+	local now = tick()
+	local nextAt = playerAbilityNextReadyAt[player] or 0
+	if now < nextAt then
+		return false, "", cd, nextAt - now
+	end
+
+	local name = animal :: string
+	local displayName = "Ability"
+	if name == "Noob Chicken" then
+		displayName = "Cluck"
+		abilityCluck(player, character)
+	elseif name == "Rat" then
+		displayName = "Scurry"
+		abilityScurry(player)
+	elseif name == "Fox" then
+		displayName = "Dash"
+		abilityFoxDash(character)
+	elseif name == "Cobra" then
+		displayName = "Venom Spit"
+		spawnPoisonProjectile(player, character)
+	elseif name == "Wolf" then
+		displayName = "Howl"
+		abilityWolfHowl(player, character)
+	elseif name == "Gorilla" then
+		displayName = "Rock Throw"
+		spawnRockProjectile(player, character)
+	elseif name == "T-Rex" then
+		displayName = "Stomp"
+		abilityTRexStomp(player, character)
+	else
+		return false, "No ability", cd, 0
+	end
+
+	playerAbilityNextReadyAt[player] = now + cd
+	return true, displayName, cd, 0
+end
+
 local function damagePlayerFromBot(_botModel: Model, target: Player, damage: number)
 	local ch = target.Character
 	if not ch then
@@ -1372,8 +1727,38 @@ local function onPlayerAdded(player)
 				end
 				playerRankedSurvivalAccum[player] = rAcc
 
+				local nowT = tick()
+				local poisonUntil = playerPoisonUntil[player]
+				if poisonUntil and nowT < poisonUntil then
+					local acc = (playerPoisonTickAccum[player] or 0) + dt
+					while acc >= 1 do
+						acc = acc - 1
+						if hum.Health > 0 then
+							local nh = hum.Health - 5
+							flashCombatHit(character)
+							local rp = character:FindFirstChild("HumanoidRootPart") :: BasePart?
+							if rp then
+								showFloatingDamage(rp, 5)
+							end
+							hum.Health = math.max(0, nh)
+						end
+					end
+					playerPoisonTickAccum[player] = acc
+				elseif poisonUntil and nowT >= poisonUntil then
+					playerPoisonUntil[player] = nil
+					playerPoisonTickAccum[player] = nil
+				end
+
 				if playerMenuUnlocked[player] == true then
-					hum.WalkSpeed = DEFAULT_PLAYER_WALK_SPEED
+					local scurryT = playerScurryUntil[player]
+					if scurryT and nowT < scurryT then
+						hum.WalkSpeed = DEFAULT_PLAYER_WALK_SPEED * 2
+					else
+						if scurryT and nowT >= scurryT then
+							playerScurryUntil[player] = nil
+						end
+						hum.WalkSpeed = DEFAULT_PLAYER_WALK_SPEED
+					end
 					hum.JumpPower = DEFAULT_PLAYER_JUMP_POWER
 				else
 					hum.WalkSpeed = 0
@@ -1439,6 +1824,10 @@ local function onPlayerRemoving(player)
 	end
 	playerHeartbeatConn[player] = nil
 	playerMenuUnlocked[player] = nil
+	playerAbilityNextReadyAt[player] = nil
+	playerScurryUntil[player] = nil
+	playerPoisonUntil[player] = nil
+	playerPoisonTickAccum[player] = nil
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
@@ -1462,6 +1851,23 @@ end)
 
 attackRequest.OnServerEvent:Connect(function(player: Player)
 	tryMeleeAttack(player)
+end)
+
+useAbility.OnServerEvent:Connect(function(player: Player)
+	if playerPoints[player] == nil or playerMenuUnlocked[player] ~= true then
+		fireAbilityFeedback(player, false, "", 0, 0)
+		return
+	end
+	local ok, abName, cdTotal, remaining = tryExecutePlayerAbility(player)
+	if ok then
+		fireAbilityFeedback(player, true, abName, cdTotal, 0)
+	else
+		if abName == "No ability" then
+			fireAbilityFeedback(player, false, abName, cdTotal, 0)
+		else
+			fireAbilityFeedback(player, false, "", cdTotal, remaining)
+		end
+	end
 end)
 
 animalPicked.OnServerEvent:Connect(function(player: Player, animalName: unknown)

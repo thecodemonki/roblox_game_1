@@ -136,10 +136,23 @@ local function isAnimalAllowedAtLevel(animalName: string, level: number): boolea
 	return false
 end
 
+-- Which evolution tier (1–7) this animal belongs to, or nil if unknown.
+local function getTierForAnimalName(animalName: string): number?
+	for tier, pool in ipairs(POOLS) do
+		for _, a in ipairs(pool) do
+			if a.name == animalName then
+				return tier
+			end
+		end
+	end
+	return nil
+end
+
 return {
 	getTierForLevel = getTierForLevel,
 	sampleChoicesForLevel = sampleChoicesForLevel,
 	isNameInChoices = isNameInChoices,
 	getDefaultAnimalNameForLevel = getDefaultAnimalNameForLevel,
 	isAnimalAllowedAtLevel = isAnimalAllowedAtLevel,
+	getTierForAnimalName = getTierForAnimalName,
 }

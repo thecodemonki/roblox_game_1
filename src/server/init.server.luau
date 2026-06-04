@@ -15,6 +15,7 @@ local AnimalPools = require(Shared:WaitForChild("AnimalPools"))
 local pointsUpdate = ReplicatedStorage:WaitForChild("PointsUpdate") :: RemoteEvent
 local levelUp = ReplicatedStorage:WaitForChild("LevelUp") :: RemoteEvent
 local animalPicked = ReplicatedStorage:WaitForChild("AnimalPicked") :: RemoteEvent
+local animalChanged = ReplicatedStorage:WaitForChild("AnimalChanged") :: RemoteEvent
 local playerDied = ReplicatedStorage:WaitForChild("PlayerDied") :: RemoteEvent
 local attackRequest = ReplicatedStorage:WaitForChild("AttackRequest") :: RemoteEvent
 local playerKilled = ReplicatedStorage:WaitForChild("PlayerKilled") :: RemoteEvent
@@ -33,6 +34,7 @@ local voidBeastUnlocked = ReplicatedStorage:WaitForChild("VoidBeastUnlocked") ::
 local rankedTimerSync = ReplicatedStorage:WaitForChild("RankedTimerSync") :: RemoteEvent
 
 local Bots = require(script:WaitForChild("Bots"))
+local AnimalAppearance = require(script:WaitForChild("AnimalAppearance"))
 
 local EVOLUTION_FF_NAME = "EvolutionPickShield"
 
@@ -144,6 +146,7 @@ local playerPoints = {}
 local playerLevel = {} -- last synced level (for LevelUp detection)
 local pendingEvolution: { [Player]: { choices: { { name: string, ability: string } }, expires: number } } = {}
 local playerAnimal: { [Player]: string } = {}
+local playerHasVoidApex: { [Player]: boolean } = {}
 -- Kill title progress: persists through death (handlePlayerDeath does not reset this).
 local playerKills: { [Player]: number } = {}
 local playerLastAttack: { [Player]: number } = {}
@@ -162,6 +165,30 @@ local playerPlaytimeMilestonesDone: { [Player]: { [string]: boolean } } = {}
 -- Current life survival streak (seconds); resets on death.
 local playerSurvivalSec: { [Player]: number } = {}
 local playerLastSurvivalStreakSync: { [Player]: number } = {}
+
+local function voidApexActive(player: Player): boolean
+	return playerHasVoidApex[player] == true
+end
+
+local function applyStoredAnimalLook(player: Player, character: Model?)
+	local ch = character or player.Character
+	local name = playerAnimal[player]
+	if not ch or not name or playerPoints[player] == nil then
+		return
+	end
+	local lv = getLevelFromPoints(playerPoints[player] or 0)
+	AnimalAppearance.applyFullDeferred(ch, name, lv, voidApexActive(player))
+end
+
+local function updateAnimalOverheadForPlayer(player: Player)
+	local ch = player.Character
+	local name = playerAnimal[player]
+	if not ch or not name or playerPoints[player] == nil then
+		return
+	end
+	local lv = getLevelFromPoints(playerPoints[player] or 0)
+	AnimalAppearance.updateOverheadTextOnly(ch, name, lv)
+end
 
 -- Rolling 15-minute ranked rounds (separate score from endless).
 local rankedRoundStart = tick()
@@ -683,6 +710,7 @@ local function syncPointsAndLevel(player: Player)
 	else
 		playerLevel[player] = newLevel
 	end
+	updateAnimalOverheadForPlayer(player)
 end
 
 -- Give points to player
@@ -801,6 +829,8 @@ local function endRankedRound()
 			playerRankedWinStreak[plr] = w
 			if w >= 3 then
 				voidBeastUnlocked:FireClient(plr)
+				playerHasVoidApex[plr] = true
+				applyStoredAnimalLook(plr)
 				playerRankedWinStreak[plr] = 0
 			end
 		else
@@ -1087,6 +1117,7 @@ local function onPlayerAdded(player)
 	playerRankedSurvivalAccum[player] = 0
 	playerRankedWinStreak[player] = 0
 	print(player.Name .. " joined. Points: 0")
+	playerHasVoidApex[player] = false
 	pointsUpdate:FireClient(player, 0, 1)
 	titleSync:FireClient(player, playerTitle[player] :: string)
 	syncSkinInventory(player)
@@ -1172,6 +1203,10 @@ local function onPlayerAdded(player)
 				tryOpenNearbyChest(player, rootPart.Position)
 			end
 		end)
+
+		task.defer(function()
+			applyStoredAnimalLook(player, character)
+		end)
 	end)
 end
 
@@ -1181,6 +1216,7 @@ local function onPlayerRemoving(player)
 	playerLevel[player] = nil
 	pendingEvolution[player] = nil
 	playerAnimal[player] = nil
+	playerHasVoidApex[player] = nil
 	playerKills[player] = nil
 	playerLastAttack[player] = nil
 	playerTitle[player] = nil
@@ -1253,6 +1289,17 @@ animalPicked.OnServerEvent:Connect(function(player: Player, animalName: unknown)
 	end
 
 	addRankedPoints(player, RANKED_POINTS_EVOLUTION)
+	applyStoredAnimalLook(player)
+end)
+
+animalChanged.OnServerEvent:Connect(function(player: Player, animalName: unknown)
+	if typeof(animalName) ~= "string" then
+		return
+	end
+	if playerAnimal[player] ~= animalName :: string then
+		return
+	end
+	applyStoredAnimalLook(player)
 end)
 
 purchaseChest.OnServerInvoke = function(player: Player, chestKind: unknown): boolean

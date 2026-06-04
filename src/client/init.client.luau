@@ -25,6 +25,7 @@ end)
 local pointsUpdate = ReplicatedStorage:WaitForChild("PointsUpdate") :: RemoteEvent
 local levelUpRemote = ReplicatedStorage:WaitForChild("LevelUp") :: RemoteEvent
 local animalPicked = ReplicatedStorage:WaitForChild("AnimalPicked") :: RemoteEvent
+local animalChanged = ReplicatedStorage:WaitForChild("AnimalChanged") :: RemoteEvent
 local playerDied = ReplicatedStorage:WaitForChild("PlayerDied") :: RemoteEvent
 local attackRequest = ReplicatedStorage:WaitForChild("AttackRequest") :: RemoteEvent
 local playerKilled = ReplicatedStorage:WaitForChild("PlayerKilled") :: RemoteEvent
@@ -1425,6 +1426,9 @@ local function showEvolutionPick(newLevel: number, choices: { AnimalChoice })
 			picked = true
 			minimapAnimalLabel.Text = animal.name
 			animalPicked:FireServer(animal.name)
+			task.defer(function()
+				animalChanged:FireServer(animal.name)
+			end)
 			closePickUi()
 		end)
 	end

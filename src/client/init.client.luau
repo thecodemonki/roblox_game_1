@@ -1,5 +1,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Shared = ReplicatedStorage:WaitForChild("Shared")
+local SoundManager = require(Shared:WaitForChild("SoundManager"))
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
@@ -7,6 +9,7 @@ local CollectionService = game:GetService("CollectionService")
 local RunService = game:GetService("RunService")
 
 local player = Players.LocalPlayer
+SoundManager.startAmbientLoop()
 -- Large map: allow zooming out so the terrain stays visible around the character.
 player.CameraMaxZoomDistance = math.max(player.CameraMaxZoomDistance, 720)
 player.CameraMinZoomDistance = math.min(player.CameraMinZoomDistance, 0.5)
@@ -224,6 +227,9 @@ end
 local function onLocalCharacterAdded(character: Model)
 	local hum = character:WaitForChild("Humanoid") :: Humanoid
 	bindHumanoidHealth(hum)
+	hum.Died:Connect(function()
+		SoundManager.playSound("death")
+	end)
 end
 
 if player.Character then
@@ -446,6 +452,9 @@ end
 skinReceived.OnClientEvent:Connect(function(skinName: unknown, rarity: unknown, level: unknown, kind: unknown)
 	if typeof(skinName) ~= "string" or typeof(rarity) ~= "string" or typeof(level) ~= "number" then
 		return
+	end
+	if not suppressSkinChestSfx then
+		SoundManager.playSound("chestOpen")
 	end
 	local k = if typeof(kind) == "string" then kind :: string else "new"
 	showSkinChestPopup(skinName :: string, rarity :: string, level :: number, k)
@@ -1167,9 +1176,17 @@ shopOpenBtn.MouseButton1Click:Connect(function()
 	refreshShopBuyButtons()
 end)
 
+-- Avoid double chest SFX when shop purchase triggers skinReceived shortly after.
+local suppressSkinChestSfx = false
+
 local function tryPurchaseChest(kind: string)
 	local ok = purchaseChest:InvokeServer(kind)
 	if typeof(ok) == "boolean" and ok then
+		suppressSkinChestSfx = true
+		SoundManager.playSound("chestOpen")
+		task.delay(0.85, function()
+			suppressSkinChestSfx = false
+		end)
 		playShopChestOpenAnim()
 	end
 	refreshShopBuyButtons()
@@ -1187,7 +1204,13 @@ rareBuyBtn.MouseButton1Click:Connect(function()
 	end
 end)
 
+local lastHudPoints: number? = nil
 pointsUpdate.OnClientEvent:Connect(function(points: number, level: number?)
+	local prev = lastHudPoints
+	lastHudPoints = points
+	if prev ~= nil and points == prev + 1 then
+		SoundManager.playSound("eat")
+	end
 	local lv = if level ~= nil then level else 1
 	setHudPointsLine(points, lv)
 end)
@@ -1474,6 +1497,7 @@ levelUpRemote.OnClientEvent:Connect(function(newLevel: number, choices: unknown?
 	if typeof(newLevel) ~= "number" then
 		return
 	end
+	SoundManager.playSound("levelUp")
 	if choices ~= nil and isChoicesArray(choices) then
 		showEvolutionPick(newLevel, choices :: { AnimalChoice })
 	else
@@ -1528,6 +1552,7 @@ end)
 
 playerKilled.OnClientEvent:Connect(function(role: unknown, otherName: unknown, pointsAwarded: unknown?)
 	if role == "killer" and typeof(otherName) == "string" and typeof(pointsAwarded) == "number" then
+		SoundManager.playSound("kill")
 		showTimedCombatMessage(
 			string.format("You killed %s! +%d points", otherName :: string, pointsAwarded :: number),
 			Color3.fromRGB(60, 220, 100),
@@ -1670,6 +1695,7 @@ end
 
 titleUnlocked.OnClientEvent:Connect(function(titleName: unknown)
 	if typeof(titleName) == "string" then
+		SoundManager.playSound("titleUnlock")
 		showTitleUnlockedPopup(titleName :: string)
 	end
 end)
@@ -1691,6 +1717,7 @@ UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: 
 		return
 	end
 	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		SoundManager.playSound("attack")
 		attackRequest:FireServer()
 	end
 end)

@@ -1323,6 +1323,13 @@ local function isChoicesArray(value: unknown): boolean
 end
 
 local function showEvolutionPick(newLevel: number, choices: { AnimalChoice })
+	for _, child in playerGui:GetChildren() do
+		if child.Name == "EvolutionPick" then
+			child:Destroy()
+		end
+	end
+	clearPickBlur()
+
 	attachPickBlur()
 
 	local pickGui = Instance.new("ScreenGui")
@@ -1374,7 +1381,6 @@ local function showEvolutionPick(newLevel: number, choices: { AnimalChoice })
 	rowLayout.Parent = cardsRow
 
 	local picked = false
-	local cardButtons: { TextButton } = {}
 
 	local function closePickUi()
 		clearPickBlur()
@@ -1412,8 +1418,6 @@ local function showEvolutionPick(newLevel: number, choices: { AnimalChoice })
 		cardPad.PaddingRight = UDim.new(0, 10)
 		cardPad.Parent = card
 
-		table.insert(cardButtons, card)
-
 		card.MouseButton1Click:Connect(function()
 			if picked then
 				return
@@ -1421,18 +1425,7 @@ local function showEvolutionPick(newLevel: number, choices: { AnimalChoice })
 			picked = true
 			minimapAnimalLabel.Text = animal.name
 			animalPicked:FireServer(animal.name)
-
-			for _, other in cardButtons do
-				if other ~= card then
-					TweenService:Create(
-						other,
-						TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-						{ BackgroundTransparency = 1, TextTransparency = 1 }
-					):Play()
-				end
-			end
-
-			task.delay(0.4, closePickUi)
+			closePickUi()
 		end)
 	end
 end
@@ -1484,14 +1477,16 @@ levelUpRemote.OnClientEvent:Connect(function(newLevel: number, choices: unknown?
 	end
 end)
 
-playerDied.OnClientEvent:Connect(function(_newLevel: number)
+playerDied.OnClientEvent:Connect(function(_newLevel: number, defaultAnimal: unknown?)
 	survivalStreakLabel.Text = formatAliveTime(0)
 	local evo = playerGui:FindFirstChild("EvolutionPick")
 	if evo then
 		evo:Destroy()
 	end
 	clearPickBlur()
-
+	if typeof(defaultAnimal) == "string" then
+		minimapAnimalLabel.Text = defaultAnimal :: string
+	end
 	local deathGui = Instance.new("ScreenGui")
 	deathGui.Name = "DeathScreen"
 	deathGui.ResetOnSpawn = false

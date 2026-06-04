@@ -88,6 +88,8 @@ local BOT_MELEE_COOLDOWN = 1.5
 local RESPAWN_DELAY = 3      -- bot eat → delayed respawn via Bots.spawnFood
 local CHEST_COUNT = 5
 local CHEST_OPEN_RANGE = 5
+local CHEST_OPEN_COOLDOWN_SEC = 2 -- any chest (world or shop) per player
+local CHEST_SAME_PART_DEBOUNCE_SEC = 0.35
 local CHEST_RESPAWN_SEC = 60
 local CHEST_SIZE = 3
 local SKIN_MAX_LEVEL = 5
@@ -119,6 +121,10 @@ local TIER_COMBAT: { [number]: { damage: number, cooldown: number } } = {
 	[1] = { damage = 10, cooldown = 1.0 },
 	[2] = { damage = 18, cooldown = 0.9 },
 	[3] = { damage = 28, cooldown = 0.8 },
+	[4] = { damage = 40, cooldown = 0.75 },
+	[5] = { damage = 52, cooldown = 0.7 },
+	[6] = { damage = 65, cooldown = 0.65 },
+	[7] = { damage = 80, cooldown = 0.55 },
 }
 
 -- Kill titles (milestones); playerKills persists through death.
@@ -145,6 +151,8 @@ local playerTitle: { [Player]: string } = {}
 local lastBotMeleeTime: { [Model]: number } = {}
 -- Skins: per player map skinName -> { level, rarity }
 local playerSkins: { [Player]: { [string]: { level: number, rarity: string } } } = {}
+local lastPlayerChestOpenTime: { [Player]: number } = {}
+local lastChestProximityAttempt: { [BasePart]: number } = {}
 local playerCoins: { [Player]: number } = {}
 local playerPlaytimeAccumSec: { [Player]: number } = {}
 local playerHeartbeatConn: { [Player]: RBXScriptConnection? } = {}
@@ -499,10 +507,19 @@ local function grantRandomSkinFromChest(player: Player)
 end
 
 local function tryOpenNearbyChest(player: Player, rootPos: Vector3)
+	local now = tick()
+	if now - (lastPlayerChestOpenTime[player] or 0) < CHEST_OPEN_COOLDOWN_SEC then
+		return
+	end
 	for slot = 1, CHEST_COUNT do
 		local ch = chestSlots[slot]
 		if ch and ch.Parent and ch:GetAttribute("Available") == true then
+			if now - (lastChestProximityAttempt[ch] or 0) < CHEST_SAME_PART_DEBOUNCE_SEC then
+				continue
+			end
 			if (ch.Position - rootPos).Magnitude <= CHEST_OPEN_RANGE then
+				lastChestProximityAttempt[ch] = now
+				lastPlayerChestOpenTime[player] = now
 				ch:SetAttribute("Available", false)
 				ch:Destroy()
 				chestSlots[slot] = nil
@@ -621,15 +638,17 @@ local function handlePlayerDeath(player: Player, character: Model)
 	local currentLevel = getLevelFromPoints(playerPoints[player])
 	local newLevel = math.max(1, currentLevel - 2)
 	local newPoints = getMinPointsForLevel(newLevel)
+	local defaultAnimal = AnimalPools.getDefaultAnimalNameForLevel(newLevel)
 
 	pendingEvolution[player] = nil
 	removePickShield(character)
 
 	playerPoints[player] = newPoints
 	playerLevel[player] = newLevel
+	playerAnimal[player] = defaultAnimal
 
 	pointsUpdate:FireClient(player, newPoints, newLevel)
-	playerDied:FireClient(player, newLevel)
+	playerDied:FireClient(player, newLevel, defaultAnimal)
 	updateSurvivalCrownCore()
 end
 
@@ -653,6 +672,8 @@ local function syncPointsAndLevel(player: Player)
 		playerLevel[player] = newLevel
 		addCoins(player, COINS_PER_LEVEL_UP)
 		local choices = AnimalPools.sampleChoicesForLevel(newLevel)
+		local tierShown = AnimalPools.getTierForLevel(newLevel)
+		print(string.format("%s leveled up to level %d, showing tier %d animals", player.Name, newLevel, tierShown))
 		pendingEvolution[player] = {
 			choices = choices,
 			expires = tick() + 60,
@@ -1164,6 +1185,7 @@ local function onPlayerRemoving(player)
 	playerLastAttack[player] = nil
 	playerTitle[player] = nil
 	playerSkins[player] = nil
+	lastPlayerChestOpenTime[player] = nil
 	playerCoins[player] = nil
 	playerPlaytimeAccumSec[player] = nil
 	playerSessionPlaytimeTotal[player] = nil
@@ -1210,6 +1232,10 @@ animalPicked.OnServerEvent:Connect(function(player: Player, animalName: unknown)
 	if not AnimalPools.isNameInChoices(animalName :: string, pending.choices) then
 		return
 	end
+	local lv = getLevelFromPoints(playerPoints[player] or 0)
+	if not AnimalPools.isAnimalAllowedAtLevel(animalName :: string, lv) then
+		return
+	end
 	pendingEvolution[player] = nil
 
 	local character = player.Character
@@ -1240,12 +1266,16 @@ purchaseChest.OnServerInvoke = function(player: Player, chestKind: unknown): boo
 	if playerCoins[player] == nil or playerSkins[player] == nil then
 		return false
 	end
+	if tick() - (lastPlayerChestOpenTime[player] or 0) < CHEST_OPEN_COOLDOWN_SEC then
+		return false
+	end
 	local price = if k == "Rare" then SHOP_CHEST_RARE_PRICE else SHOP_CHEST_COMMON_PRICE
 	if playerCoins[player] < price then
 		return false
 	end
 	playerCoins[player] = playerCoins[player] - price
 	coinsUpdated:FireClient(player, playerCoins[player])
+	lastPlayerChestOpenTime[player] = tick()
 
 	local skinName: string
 	local rolledRarity: string

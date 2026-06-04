@@ -1493,15 +1493,6 @@ local playBtnScale = Instance.new("UIScale")
 playBtnScale.Scale = 1
 playBtnScale.Parent = playBtn
 
-local menuMusic = Instance.new("Sound")
-menuMusic.Name = "MainMenuMusic"
-menuMusic.SoundId = "rbxassetid://130858249"
-menuMusic.Looped = true
-menuMusic.Volume = 0.5
-menuMusic.RollOffMaxDistance = 100
-menuMusic.Parent = SoundService
-menuMusic:Play()
-
 local function refreshStatsPanel()
 	if not mainMenuShown then
 		return
@@ -1605,14 +1596,6 @@ local function startGameFromMenu(rankedMode: boolean)
 	end
 	mainMenuShown = false
 	playerStartedGame:FireServer(rankedMode)
-
-	local musicTween = TweenService:Create(menuMusic, TweenInfo.new(0.55), { Volume = 0 })
-	musicTween.Completed:Connect(function()
-		if menuMusic.Parent then
-			menuMusic:Destroy()
-		end
-	end)
-	musicTween:Play()
 
 	local flashGui = Instance.new("ScreenGui")
 	flashGui.Name = "MainMenuTransition"

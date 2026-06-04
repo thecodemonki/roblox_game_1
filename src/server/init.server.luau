@@ -6,6 +6,7 @@ print("Server script loaded successfully")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local DataStoreService = game:GetService("DataStoreService")
 -- Studio: enable Game Settings → Security → "Enable Studio Access to API Services" to test DataStores in Play.
 local playerDataStore = DataStoreService:GetDataStore("EvolvePlayerData_v1")
@@ -339,7 +340,6 @@ local FOOD_FOLDER_NAME = "Food"
 local FOOD_MAX_COUNT = 80
 local FOOD_SPAWN_INTERVAL_SEC = 1.5
 local FOOD_SPAWN_RANGE = 350
-local FOOD_SIZE = 2.5
 local FOOD_SPAWN_Y = 2
 local FOOD_INITIAL_SPAWN_COUNT = 10
 local FOOD_REPLENISH_AFTER_EAT_SEC = 1.5
@@ -355,26 +355,156 @@ if not foodFolder:IsA("Folder") then
 end
 foodFolder = foodFolder :: Folder
 
+local function foodNewPart(name: string, shape: Enum.PartType, size: Vector3, brickColor: BrickColor): Part
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Shape = shape
+	p.Size = size
+	p.BrickColor = brickColor
+	p.Anchored = true
+	p.CanCollide = false
+	p.Transparency = 0
+	p.Material = Enum.Material.SmoothPlastic
+	return p
+end
+
+local function foodWeld(a: BasePart, b: BasePart)
+	local w = Instance.new("WeldConstraint")
+	w.Part0 = a
+	w.Part1 = b
+	w.Parent = a
+end
+
+local function attachFoodSpin(model: Model, basePivot: CFrame)
+	model:PivotTo(basePivot)
+	local spin = Instance.new("NumberValue")
+	spin.Name = "SpinY"
+	spin.Value = 0
+	spin.Parent = model
+	local tween = TweenService:Create(
+		spin,
+		TweenInfo.new(8, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1),
+		{ Value = 360 }
+	)
+	local conn = spin:GetPropertyChangedSignal("Value"):Connect(function()
+		if model.Parent == nil then
+			return
+		end
+		model:PivotTo(basePivot * CFrame.Angles(0, math.rad(spin.Value), 0))
+	end)
+	tween:Play()
+	model.Destroying:Connect(function()
+		conn:Disconnect()
+		tween:Cancel()
+	end)
+end
+
+local function buildFoodApple(): Model
+	local model = Instance.new("Model")
+	model.Name = "FoodApple"
+	local sphere = foodNewPart("Apple", Enum.PartType.Ball, Vector3.new(2.5, 2.5, 2.5), BrickColor.new("Bright red"))
+	sphere.Material = Enum.Material.Neon
+	local stem = foodNewPart("Stem", Enum.PartType.Cylinder, Vector3.new(0.3, 0.8, 0.3), BrickColor.new("Reddish brown"))
+	stem.CFrame = sphere.CFrame * CFrame.new(0, 1.25 + 0.4, 0)
+	sphere.Parent = model
+	stem.Parent = model
+	model.PrimaryPart = sphere
+	foodWeld(sphere, stem)
+	model:SetAttribute("FoodPickup", true)
+	return model
+end
+
+local function buildFoodBanana(): Model
+	local model = Instance.new("Model")
+	model.Name = "FoodBanana"
+	local body = foodNewPart("Banana", Enum.PartType.Cylinder, Vector3.new(1, 2.5, 1), BrickColor.new("Bright yellow"))
+	body.Material = Enum.Material.Neon
+	body.CFrame = CFrame.new(0, 0, 0) * CFrame.Angles(math.rad(30), 0, 0)
+	local tip = foodNewPart("BananaTip", Enum.PartType.Block, Vector3.new(0.4, 0.4, 0.4), BrickColor.new("Reddish brown"))
+	tip.CFrame = body.CFrame * CFrame.new(0, -1.25 - 0.2, 0)
+	body.Parent = model
+	tip.Parent = model
+	model.PrimaryPart = body
+	foodWeld(body, tip)
+	model:SetAttribute("FoodPickup", true)
+	return model
+end
+
+local function buildFoodMeat(): Model
+	local model = Instance.new("Model")
+	model.Name = "FoodMeat"
+	local meat = foodNewPart("Meat", Enum.PartType.Block, Vector3.new(2.5, 1.5, 2.5), BrickColor.new("Bright red"))
+	meat.Material = Enum.Material.Neon
+	local stripe1 = foodNewPart("Stripe1", Enum.PartType.Block, Vector3.new(2.6, 0.3, 0.6), BrickColor.new("White"))
+	local stripe2 = foodNewPart("Stripe2", Enum.PartType.Block, Vector3.new(2.6, 0.3, 0.6), BrickColor.new("White"))
+	stripe1.CFrame = meat.CFrame * CFrame.new(0, 0.75 + 0.15, 0.4)
+	stripe2.CFrame = meat.CFrame * CFrame.new(0, 0.75 + 0.15, -0.4)
+	meat.Parent = model
+	stripe1.Parent = model
+	stripe2.Parent = model
+	model.PrimaryPart = meat
+	foodWeld(meat, stripe1)
+	foodWeld(meat, stripe2)
+	model:SetAttribute("FoodPickup", true)
+	return model
+end
+
+local function buildFoodMushroom(): Model
+	local model = Instance.new("Model")
+	model.Name = "FoodMushroom"
+	local stem = foodNewPart("Stem", Enum.PartType.Cylinder, Vector3.new(1, 1.5, 1), BrickColor.new("White"))
+	stem.Material = Enum.Material.Neon
+	local cap = foodNewPart("Cap", Enum.PartType.Cylinder, Vector3.new(3, 0.8, 3), BrickColor.new("Reddish brown"))
+	cap.CFrame = stem.CFrame * CFrame.new(0, 0.75 + 0.4, 0)
+	stem.Parent = model
+	cap.Parent = model
+	model.PrimaryPart = stem
+	foodWeld(stem, cap)
+	model:SetAttribute("FoodPickup", true)
+	return model
+end
+
+local function buildFoodBerry(): Model
+	local model = Instance.new("Model")
+	model.Name = "FoodBerry"
+	local berry = foodNewPart("Berry", Enum.PartType.Ball, Vector3.new(2, 2, 2), BrickColor.new("Bright violet"))
+	berry.Material = Enum.Material.Neon
+	local leaf = foodNewPart("Leaf", Enum.PartType.Block, Vector3.new(0.8, 0.3, 0.8), BrickColor.new("Bright green"))
+	leaf.CFrame = berry.CFrame * CFrame.new(0, 1 + 0.15, 0)
+	berry.Parent = model
+	leaf.Parent = model
+	model.PrimaryPart = berry
+	foodWeld(berry, leaf)
+	model:SetAttribute("FoodPickup", true)
+	return model
+end
+
 local function spawnFoodPellet()
 	if #foodFolder:GetChildren() >= FOOD_MAX_COUNT then
 		return
 	end
-	local pellet = Instance.new("Part")
-	pellet.Name = "FoodPellet"
-	pellet.Shape = Enum.PartType.Ball
-	pellet.Size = Vector3.new(FOOD_SIZE, FOOD_SIZE, FOOD_SIZE)
-	pellet.Position = Vector3.new(
+	local spawnPos = Vector3.new(
 		math.random(-FOOD_SPAWN_RANGE, FOOD_SPAWN_RANGE),
 		FOOD_SPAWN_Y,
 		math.random(-FOOD_SPAWN_RANGE, FOOD_SPAWN_RANGE)
 	)
-	pellet.Anchored = true
-	pellet.CanCollide = false
-	pellet.Transparency = 0
-	pellet.Color = Color3.fromRGB(255, 200, 50)
-	pellet.Material = Enum.Material.Neon
-	pellet:SetAttribute("FoodPickup", true)
-	pellet.Parent = foodFolder
+	local kind = math.random(1, 5)
+	local model: Model
+	if kind == 1 then
+		model = buildFoodApple()
+	elseif kind == 2 then
+		model = buildFoodBanana()
+	elseif kind == 3 then
+		model = buildFoodMeat()
+	elseif kind == 4 then
+		model = buildFoodMushroom()
+	else
+		model = buildFoodBerry()
+	end
+	model.Parent = foodFolder
+	model:PivotTo(CFrame.new(spawnPos))
+	local basePivot = model:GetPivot()
+	attachFoodSpin(model, basePivot)
 end
 
 for _ = 1, FOOD_INITIAL_SPAWN_COUNT do
@@ -388,7 +518,7 @@ task.spawn(function()
 	end
 end)
 
-print("[Server] Food folder: " .. foodFolder:GetFullName() .. " (" .. tostring(#foodFolder:GetChildren()) .. " pellets after initial spawn)")
+print("[Server] Food folder: " .. foodFolder:GetFullName() .. " (" .. tostring(#foodFolder:GetChildren()) .. " food items after initial spawn)")
 
 -- Chests (glowing gold) + skin drops
 local chestFolder = Instance.new("Folder")
@@ -2059,8 +2189,12 @@ RunService.Heartbeat:Connect(function(dt: number)
 			end
 			local root = rootPart :: BasePart
 			for _, food in ipairs(foodsFolder:GetChildren()) do
-				if food:IsA("BasePart") and food:GetAttribute("FoodPickup") == true and food.Parent ~= nil then
-					local distance = (root.Position - food.Position).Magnitude
+				if food:IsA("Model") and food:GetAttribute("FoodPickup") == true and food.Parent ~= nil then
+					local primary = food.PrimaryPart
+					if not primary then
+						continue
+					end
+					local distance = (root.Position - primary.Position).Magnitude
 					if distance < 5 then
 						food:Destroy()
 						if playerPoints[player] ~= nil then

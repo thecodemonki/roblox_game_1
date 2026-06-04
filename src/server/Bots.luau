@@ -129,8 +129,12 @@ local function eatNearbyFood(root: BasePart, c: BotConfig)
 		return
 	end
 	for _, child in c.foodFolder:GetChildren() do
-		if child:IsA("BasePart") and child:GetAttribute("FoodPickup") == true then
-			if (child.Position - root.Position).Magnitude < 5 then
+		if child:IsA("Model") and child:GetAttribute("FoodPickup") == true then
+			local primary = child.PrimaryPart
+			if not primary then
+				continue
+			end
+			if (primary.Position - root.Position).Magnitude < 5 then
 				child:Destroy()
 				if c.spawnFood then
 					task.delay(c.foodRespawnDelay, c.spawnFood)

@@ -5,16 +5,21 @@ local Players = game:GetService("Players")
 local SoundService = game:GetService("SoundService")
 
 local AMBIENT_NAME = "EvolveForestAmbient"
+local ROLL_OFF_MAX = 100
+
+local VOL_AMBIENT = 0.3
+local VOL_UI = 0.6
+local VOL_COMBAT = 0.8
 
 local IDS: { [string]: string } = {
-	eat = "rbxassetid://131961136",
-	levelUp = "rbxassetid://4612334716",
-	death = "rbxassetid://131070686",
-	kill = "rbxassetid://4612334716",
-	chestOpen = "rbxassetid://131070759",
-	titleUnlock = "rbxassetid://4612334716",
-	attack = "rbxassetid://131070689",
-	ambientForest = "rbxassetid://1840054027",
+	eat = "rbxassetid://6026984224",
+	levelUp = "rbxassetid://6042053626",
+	death = "rbxassetid://6042053626",
+	kill = "rbxassetid://4612332731",
+	chestOpen = "rbxassetid://6026984224",
+	titleUnlock = "rbxassetid://4612332731",
+	attack = "rbxassetid://9120386446",
+	ambientForest = "rbxassetid://1837862028",
 }
 
 local function getLocalRoot(): BasePart?
@@ -33,13 +38,11 @@ local function getLocalRoot(): BasePart?
 	return nil
 end
 
-local function playOneShotAtParent(soundId: string, parent: Instance, volume: number, maxDistance: number?)
+local function playOneShotAtParent(soundId: string, parent: Instance, volume: number)
 	local s = Instance.new("Sound")
 	s.SoundId = soundId
 	s.Volume = volume
-	if maxDistance then
-		s.RollOffMaxDistance = maxDistance
-	end
+	s.RollOffMaxDistance = ROLL_OFF_MAX
 	s.Parent = parent
 	s:Play()
 	s.Ended:Connect(function()
@@ -51,6 +54,7 @@ local function playOneShot2D(soundId: string, volume: number)
 	local s = Instance.new("Sound")
 	s.SoundId = soundId
 	s.Volume = volume
+	s.RollOffMaxDistance = ROLL_OFF_MAX
 	s.Parent = SoundService
 	s:Play()
 	s.Ended:Connect(function()
@@ -70,22 +74,19 @@ function SoundManager.playSound(soundName: string)
 	if soundName == "eat" or soundName == "attack" then
 		local root = getLocalRoot()
 		if root then
-			local vol = if soundName == "eat" then 0.75 else 0.55
-			playOneShotAtParent(id, root, vol, 140)
+			local vol = if soundName == "eat" then VOL_UI else VOL_COMBAT
+			playOneShotAtParent(id, root, vol)
 		else
-			playOneShot2D(id, 0.65)
+			local vol = if soundName == "eat" then VOL_UI else VOL_COMBAT
+			playOneShot2D(id, vol)
 		end
 		return
 	end
 
-	if soundName == "death" then
-		playOneShot2D(id, 0.9)
-	elseif soundName == "levelUp" or soundName == "kill" or soundName == "titleUnlock" then
-		playOneShot2D(id, 0.55)
-	elseif soundName == "chestOpen" then
-		playOneShot2D(id, 0.65)
+	if soundName == "death" or soundName == "levelUp" or soundName == "kill" or soundName == "titleUnlock" or soundName == "chestOpen" then
+		playOneShot2D(id, VOL_UI)
 	else
-		playOneShot2D(id, 0.7)
+		playOneShot2D(id, VOL_UI)
 	end
 end
 
@@ -102,7 +103,8 @@ function SoundManager.startAmbientLoop()
 	local s = Instance.new("Sound")
 	s.Name = AMBIENT_NAME
 	s.SoundId = id
-	s.Volume = 0.3
+	s.Volume = VOL_AMBIENT
+	s.RollOffMaxDistance = ROLL_OFF_MAX
 	s.Looped = true
 	s.Parent = SoundService
 	s:Play()

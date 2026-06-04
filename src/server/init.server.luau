@@ -11,6 +11,17 @@ local DataStoreService = game:GetService("DataStoreService")
 -- Studio: enable Game Settings → Security → "Enable Studio Access to API Services" to test DataStores in Play.
 local playerDataStore = DataStoreService:GetDataStore("EvolvePlayerData_v1")
 
+-- Remove legacy duplicate food spawner if present (e.g. old Studio/Rojo scripts).
+do
+	local sss = game:GetService("ServerScriptService")
+	for _, inst in ipairs(sss:GetDescendants()) do
+		if inst.Name == "FoodSpawner" and (inst:IsA("Script") or inst:IsA("LocalScript")) then
+			print("[Server] Destroying legacy FoodSpawner:", inst:GetFullName())
+			inst:Destroy()
+		end
+	end
+end
+
 local DEFAULT_DATA = {
 	level = 1,
 	points = 0,
@@ -107,6 +118,16 @@ local MAP_SIZE = 400         -- half-width in studs (800x800 play area; matches 
 local MAP_SURFACE_Y = 0      -- top of Workspace.Ground from MapSetup.server
 local DEFAULT_PLAYER_WALK_SPEED = 16
 local DEFAULT_PLAYER_JUMP_POWER = 50
+
+local function applyMenuMovementUnlock(plr: Player)
+	local ch = plr.Character
+	local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+	if hum and hum.Health > 0 then
+		hum.WalkSpeed = DEFAULT_PLAYER_WALK_SPEED
+		hum.JumpPower = DEFAULT_PLAYER_JUMP_POWER
+	end
+end
+
 local POINTS_PER_FOOD = 1    -- points per pellet eaten
 local POINTS_PER_KILL = 15
 local BOT_MELEE_COOLDOWN = 1.5
@@ -221,6 +242,7 @@ local playerRankedSurvivalAccum: { [Player]: number } = {}
 local playerRankedWinStreak: { [Player]: number } = {}
 local playerRankedWins: { [Player]: number } = {}
 local playerMenuUnlocked: { [Player]: boolean } = {}
+local playerJoinTime: { [Player]: number } = {}
 local playerAbilityNextReadyAt: { [Player]: number } = {}
 local playerScurryUntil: { [Player]: number } = {}
 local playerPoisonUntil: { [Player]: number } = {}
@@ -1121,11 +1143,9 @@ local function mergeProfileFromStore(raw: any): { [string]: any }
 		voidApex = false,
 		playtimeMilestones = {},
 	}
+	local storedTitle: string? = nil
 	if typeof(raw) == "table" then
 		local t = raw :: { [string]: any }
-		if typeof(t.points) == "number" and t.points == t.points and t.points >= 0 then
-			merged.points = math.min(math.floor(t.points), 1_000_000)
-		end
 		if typeof(t.kills) == "number" and t.kills == t.kills and t.kills >= 0 then
 			merged.kills = math.min(math.floor(t.kills), 100_000)
 		end
@@ -1135,35 +1155,22 @@ local function mergeProfileFromStore(raw: any): { [string]: any }
 		if typeof(t.totalPlaytime) == "number" and t.totalPlaytime == t.totalPlaytime and t.totalPlaytime >= 0 then
 			merged.totalPlaytime = math.min(t.totalPlaytime, 1e8)
 		end
-		if typeof(t.rankedWins) == "number" and t.rankedWins == t.rankedWins and t.rankedWins >= 0 then
-			merged.rankedWins = math.min(math.floor(t.rankedWins), 100_000)
-		end
 		if typeof(t.rankedWinStreak) == "number" and t.rankedWinStreak == t.rankedWinStreak and t.rankedWinStreak >= 0 then
 			merged.rankedWinStreak = math.min(math.floor(t.rankedWinStreak), 10_000)
 		end
+		if typeof(t.killTitle) == "string" and t.killTitle ~= "" then
+			storedTitle = t.killTitle :: string
+		end
 		merged.skins = cloneSkinInventory(t.skins)
-		if t.voidApex == true then
-			merged.voidApex = true
-		end
-		merged.playtimeMilestones = cloneMilestones(t.playtimeMilestones)
 	end
-	merged.level = getLevelFromPoints(merged.points :: number)
-	local lv = merged.level :: number
-	local animalName = merged.currentAnimal
-	if typeof(raw) == "table" then
-		local t = raw :: { [string]: any }
-		if typeof(t.currentAnimal) == "string" then
-			animalName = t.currentAnimal
-		end
-	end
-	if typeof(animalName) ~= "string" then
-		animalName = DEFAULT_DATA.currentAnimal
-	end
-	if not AnimalPools.isAnimalAllowedAtLevel(animalName :: string, lv) then
-		animalName = AnimalPools.getDefaultAnimalNameForLevel(lv)
-	end
-	merged.currentAnimal = animalName
-	merged.killTitle = titleFromKills(merged.kills :: number)
+	-- Session-only: never restore points, level, animal, ranked wins, void apex, or milestones from DataStore.
+	merged.points = 0
+	merged.level = getLevelFromPoints(0)
+	merged.rankedWins = 0
+	merged.currentAnimal = AnimalPools.getDefaultAnimalNameForLevel(merged.level :: number)
+	merged.voidApex = false
+	merged.playtimeMilestones = {}
+	merged.killTitle = if storedTitle then storedTitle :: string else titleFromKills(merged.kills :: number)
 	return merged
 end
 
@@ -1208,6 +1215,17 @@ local function loadData(player: Player)
 	end
 
 	playerMenuUnlocked[player] = false
+	playerJoinTime[player] = tick()
+	task.delay(30, function()
+		if not player.Parent then
+			return
+		end
+		if playerMenuUnlocked[player] == true then
+			return
+		end
+		playerMenuUnlocked[player] = true
+		applyMenuMovementUnlock(player)
+	end)
 end
 
 local function saveData(player: Player)
@@ -1216,18 +1234,12 @@ local function saveData(player: Player)
 	end
 	local key = datastoreKeyForPlayer(player)
 	local blob: { [string]: any } = {
-		points = playerPoints[player],
-		level = getLevelFromPoints(playerPoints[player] :: number),
 		kills = playerKills[player] or 0,
 		killTitle = playerTitle[player] or titleFromKills(playerKills[player] or 0),
 		coins = playerCoins[player] or 0,
 		skins = cloneSkinInventory(playerSkins[player] or {}),
 		totalPlaytime = playerSessionPlaytimeTotal[player] or 0,
-		rankedWins = playerRankedWins[player] or 0,
 		rankedWinStreak = playerRankedWinStreak[player] or 0,
-		currentAnimal = playerAnimal[player] or DEFAULT_DATA.currentAnimal,
-		voidApex = playerHasVoidApex[player] == true,
-		playtimeMilestones = cloneMilestones(playerPlaytimeMilestonesDone[player] or {}),
 	}
 	local ok, err = pcall(function()
 		playerDataStore:SetAsync(key, blob)
@@ -1954,6 +1966,7 @@ local function onPlayerRemoving(player)
 	end
 	playerHeartbeatConn[player] = nil
 	playerMenuUnlocked[player] = nil
+	playerJoinTime[player] = nil
 	playerAbilityNextReadyAt[player] = nil
 	playerScurryUntil[player] = nil
 	playerPoisonUntil[player] = nil
@@ -2089,11 +2102,18 @@ purchaseChest.OnServerInvoke = function(player: Player, chestKind: unknown): boo
 end
 
 playerStartedGame.OnServerEvent:Connect(function(player: Player, rankedMode: unknown?)
-	if playerPoints[player] == nil then
+	if not player.Parent then
 		return
+	end
+	if playerPoints[player] == nil then
+		playerPoints[player] = 0
+	end
+	if playerLevel[player] == nil then
+		playerLevel[player] = 1
 	end
 	playerMenuUnlocked[player] = true
 	player:SetAttribute("MenuRankedChoice", rankedMode == true)
+	applyMenuMovementUnlock(player)
 end)
 
 getPlayerStats.OnServerInvoke = function(player: Player)

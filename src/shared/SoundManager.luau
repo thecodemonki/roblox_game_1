@@ -6,20 +6,18 @@ local SoundService = game:GetService("SoundService")
 
 local AMBIENT_NAME = "EvolveForestAmbient"
 local ROLL_OFF_MAX = 100
-
--- Temporary: single verified audio asset for all SFX until per-sound IDs are set.
-local UNIFIED_SOUND_ID = "rbxassetid://9120386456"
 local SOUND_VOLUME = 0.5
 
+-- Roblox default / widely-usable asset IDs (per effect).
 local IDS: { [string]: string } = {
-	eat = UNIFIED_SOUND_ID,
-	levelUp = UNIFIED_SOUND_ID,
-	death = UNIFIED_SOUND_ID,
-	kill = UNIFIED_SOUND_ID,
-	chestOpen = UNIFIED_SOUND_ID,
-	titleUnlock = UNIFIED_SOUND_ID,
-	attack = UNIFIED_SOUND_ID,
-	ambientForest = UNIFIED_SOUND_ID,
+	eat = "rbxassetid://131961136",
+	levelUp = "rbxassetid://4612332731",
+	death = "rbxassetid://131070686",
+	kill = "rbxassetid://4612332731",
+	chestOpen = "rbxassetid://131070759",
+	titleUnlock = "rbxassetid://4612332731",
+	attack = "rbxassetid://131070689",
+	ambientForest = "rbxassetid://130858249",
 }
 
 local function getLocalRoot(): BasePart?

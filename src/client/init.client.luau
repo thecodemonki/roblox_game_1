@@ -54,6 +54,8 @@ local abilityFeedback = ReplicatedStorage:WaitForChild("AbilityFeedback") :: Rem
 
 local playerGui = player:WaitForChild("PlayerGui")
 
+local menuState = { mainMenuShown = true }
+
 local UIManager = require(script.Parent:WaitForChild("UIManager"))
 UIManager.start({
 	player = player,
@@ -90,4 +92,5 @@ UIManager.start({
 	getLeaderboardRemote = getLeaderboardRemote,
 	useAbility = useAbility,
 	abilityFeedback = abilityFeedback,
+	menuState = menuState,
 })

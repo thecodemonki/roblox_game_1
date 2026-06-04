@@ -1495,9 +1495,9 @@ playBtnScale.Parent = playBtn
 
 local menuMusic = Instance.new("Sound")
 menuMusic.Name = "MainMenuMusic"
-menuMusic.SoundId = "rbxassetid://3051417074"
+menuMusic.SoundId = "rbxassetid://9120386456"
 menuMusic.Looped = true
-menuMusic.Volume = 0.3
+menuMusic.Volume = 0.5
 menuMusic.RollOffMaxDistance = 100
 menuMusic.Parent = SoundService
 menuMusic:Play()

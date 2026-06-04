@@ -42,7 +42,7 @@ On death, players **lose 2 levels** but **keep** kill titles and their skin coll
 
 **Phase 1** — food spawning and the points system are **complete**. Further systems (biomes, modes, progression UI, etc.) are planned or in progress.
 
-**Food spawning** is implemented only in `src/server/init.server.luau` (Rojo maps it under `ServerScriptService.Server`). If you see double spawns in Studio, remove any legacy `FoodSpawner` or duplicate food scripts from the place file so they are not running alongside Rojo sync.
+**Food spawning** is implemented only in `src/server/init.server.luau` (Rojo maps all of `src/server/` under `ServerScriptService.Server`). Do **not** add `FoodSpawner.server.luau` under `src/server/`—it would run twice with `init.server.luau`. If you see double spawns or duplicate “Food spawner” logs, delete `FoodSpawner.server.luau` from your tree if it exists locally, and remove any legacy FoodSpawner script from the Studio place outside Rojo sync.
 
 ---
 

@@ -12,14 +12,14 @@ local VOL_UI = 0.6
 local VOL_COMBAT = 0.8
 
 local IDS: { [string]: string } = {
-	eat = "rbxassetid://6026984224",
-	levelUp = "rbxassetid://6042053626",
-	death = "rbxassetid://6042053626",
-	kill = "rbxassetid://4612332731",
-	chestOpen = "rbxassetid://6026984224",
-	titleUnlock = "rbxassetid://4612332731",
-	attack = "rbxassetid://9120386446",
-	ambientForest = "rbxassetid://1837862028",
+	eat = "rbxassetid://3051417073",
+	levelUp = "rbxassetid://3051417079",
+	death = "rbxassetid://3051417076",
+	kill = "rbxassetid://3051417079",
+	chestOpen = "rbxassetid://3051417073",
+	titleUnlock = "rbxassetid://3051417079",
+	attack = "rbxassetid://3051417077",
+	ambientForest = "rbxassetid://3051417074",
 }
 
 local function getLocalRoot(): BasePart?
